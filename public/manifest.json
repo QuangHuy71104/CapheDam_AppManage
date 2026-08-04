@@ -1,0 +1,26 @@
+{
+  "name": "Ca phe Dam - Quan ly ca",
+  "short_name": "Ca phe Dam",
+  "description": "Ung dung web noi bo de cham cong, bao ca va theo doi van hanh quan ca phe.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F5EDE1",
+  "theme_color": "#5A2F1B",
+  "icons": [
+    {
+      "src": "/pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
