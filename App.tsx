@@ -871,15 +871,8 @@ const mapProfileRow = (row: Record<string, unknown>, user: User): UserProfile =>
 };
 
 const callAccountApi = async <T,>(method: 'GET' | 'PATCH', body?: Record<string, unknown>): Promise<T> => {
-  const { data } = await supabase.auth.getSession();
-  const accessToken = data.session?.access_token;
-  if (!accessToken) {
-    throw new Error('Phiên đăng nhập đã hết. Vui lòng đăng nhập lại.');
-  }
-
-  let response: Response;
-  try {
-    response = await fetch('/api/account', {
+  const sendRequest = (accessToken: string) =>
+    fetch('/api/account', {
       body: body ? JSON.stringify(body) : undefined,
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -887,6 +880,27 @@ const callAccountApi = async <T,>(method: 'GET' | 'PATCH', body?: Record<string,
       },
       method,
     });
+
+  const { data } = await supabase.auth.getSession();
+  let accessToken = data.session?.access_token;
+  if (!accessToken) {
+    const refreshed = await supabase.auth.refreshSession();
+    accessToken = refreshed.data.session?.access_token;
+  }
+  if (!accessToken) {
+    throw new Error('Phiên đăng nhập đã hết. Vui lòng đăng nhập lại.');
+  }
+
+  let response: Response;
+  try {
+    response = await sendRequest(accessToken);
+    if (response.status === 401) {
+      const refreshed = await supabase.auth.refreshSession();
+      const refreshedToken = refreshed.data.session?.access_token;
+      if (refreshedToken) {
+        response = await sendRequest(refreshedToken);
+      }
+    }
   } catch {
     throw new Error('Không kết nối được. Vui lòng kiểm tra mạng rồi thử lại.');
   }
@@ -1202,6 +1216,9 @@ const getFriendlyErrorMessage = (error: unknown, fallback = 'Chưa thực hiện
     message.includes('pgrst')
   ) {
     return 'Ứng dụng chưa sẵn sàng để lưu mục này. Vui lòng báo người phụ trách.';
+  }
+  if (rawMessage && /[^\u0000-\u007f]/.test(rawMessage)) {
+    return rawMessage;
   }
 
   return fallback;
