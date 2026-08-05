@@ -6,6 +6,7 @@
 
 - Có 3 vai trò: Chủ cửa hàng, Quản lí chi nhánh và Nhân viên.
 - Đăng nhập bằng Supabase Auth qua email + mật khẩu, hồ sơ người dùng lưu email, role và chi nhánh trong bảng `profiles`.
+- Người dùng đã đăng nhập có thể tự đổi mật khẩu sau khi xác thực lại mật khẩu hiện tại; ứng dụng không lưu mật khẩu dạng đọc được trên thiết bị.
 - Chấm công theo bảng công tháng, nhập giờ ca sáng/ca chiều, tính lương theo giờ, tiền ăn sáng và phụ cấp.
 - Nhân viên xác nhận bảng lương trước khi quản lí chi nhánh nhìn thấy.
 - Quản lí chi nhánh xem bảng tổng hợp nhân viên đã xác nhận, xác nhận gửi chủ cửa hàng, hủy xác nhận trước ngày cuối tháng và có tự xác nhận trước ngày cuối tháng một ngày.

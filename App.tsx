@@ -14,6 +14,7 @@ import {
   Text,
   TextInput,
   type KeyboardTypeOptions,
+  type TextInputProps,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -2098,6 +2099,7 @@ export default function App() {
           ) : null}
 
           <AccountContextBar
+            authEmail={session.user.email ?? profile.email}
             branchId={selectedBranchId}
             profile={profile}
             syncing={syncingRemote}
@@ -2556,6 +2558,7 @@ function AuthScreen({
             </View>
 
             <FormField
+              autoComplete="email"
               autoCapitalize="none"
               autoCorrect={false}
               icon={Mail}
@@ -2567,6 +2570,7 @@ function AuthScreen({
             />
 
             <FormField
+              autoComplete={mode === 'signIn' ? 'current-password' : 'new-password'}
               autoCapitalize="none"
               autoCorrect={false}
               icon={KeyRound}
@@ -2574,6 +2578,7 @@ function AuthScreen({
               onChangeText={setPassword}
               placeholder={`Ít nhất ${minimumPasswordLength} ký tự`}
               secureTextEntry={!showPassword}
+              textContentType={mode === 'signIn' ? 'password' : 'newPassword'}
               trailingAction={{
                 icon: showPassword ? EyeOff : Eye,
                 label: showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu',
@@ -2584,6 +2589,7 @@ function AuthScreen({
 
             {mode === 'signUp' ? (
               <FormField
+                autoComplete="new-password"
                 autoCapitalize="none"
                 autoCorrect={false}
                 icon={KeyRound}
@@ -2591,6 +2597,7 @@ function AuthScreen({
                 onChangeText={setConfirmPassword}
                 placeholder="Nhập lại mật khẩu"
                 secureTextEntry={!showConfirmPassword}
+                textContentType="newPassword"
                 trailingAction={{
                   icon: showConfirmPassword ? EyeOff : Eye,
                   label: showConfirmPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu',
@@ -2708,11 +2715,13 @@ function AuthFeedbackBanner({ feedback, onDismiss }: { feedback: AuthFeedback; o
 }
 
 function AccountContextBar({
+  authEmail,
   branchId,
   onSignOut,
   profile,
   syncing,
 }: {
+  authEmail: string;
   branchId: string;
   onSignOut: () => void;
   profile: UserProfile;
@@ -2720,6 +2729,122 @@ function AccountContextBar({
 }) {
   const roleLabel = roleOptions.find((option) => option.key === profile.role)?.label ?? 'Nhân viên';
   const branch = profile.branchId ? getBranchById(profile.branchId) : getBranchById(branchId);
+  const [showPasswordForm, setShowPasswordForm] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [savingPassword, setSavingPassword] = useState(false);
+  const [passwordFeedback, setPasswordFeedback] = useState<AuthFeedback | null>(null);
+
+  const clearPasswordForm = () => {
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setShowCurrentPassword(false);
+    setShowNewPassword(false);
+    setShowConfirmPassword(false);
+    setPasswordFeedback(null);
+  };
+
+  const togglePasswordForm = () => {
+    if (savingPassword) {
+      return;
+    }
+
+    clearPasswordForm();
+    setShowPasswordForm((visible) => !visible);
+  };
+
+  const savePassword = async () => {
+    if (savingPassword) {
+      return;
+    }
+
+    if (!currentPassword) {
+      setPasswordFeedback({
+        tone: 'error',
+        title: 'Thiếu mật khẩu hiện tại',
+        message: 'Vui lòng nhập mật khẩu đang dùng để xác thực tài khoản.',
+      });
+      return;
+    }
+
+    if (newPassword.length < minimumPasswordLength) {
+      setPasswordFeedback({
+        tone: 'error',
+        title: 'Mật khẩu mới quá ngắn',
+        message: `Vui lòng nhập mật khẩu mới ít nhất ${minimumPasswordLength} ký tự.`,
+      });
+      return;
+    }
+
+    if (newPassword === currentPassword) {
+      setPasswordFeedback({
+        tone: 'error',
+        title: 'Mật khẩu chưa thay đổi',
+        message: 'Mật khẩu mới phải khác mật khẩu hiện tại.',
+      });
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setPasswordFeedback({
+        tone: 'error',
+        title: 'Mật khẩu không khớp',
+        message: 'Vui lòng nhập lại chính xác mật khẩu mới.',
+      });
+      return;
+    }
+
+    setSavingPassword(true);
+    setPasswordFeedback({
+      tone: 'info',
+      title: 'Đang lưu mật khẩu',
+      message: 'Đang xác thực và cập nhật mật khẩu trên Supabase...',
+    });
+
+    try {
+      const { error: verifyError } = await supabase.auth.signInWithPassword({
+        email: authEmail,
+        password: currentPassword,
+      });
+
+      if (verifyError) {
+        const isInvalidPassword = verifyError.message.toLowerCase().includes('invalid login credentials');
+        throw new Error(isInvalidPassword ? 'Mật khẩu hiện tại không đúng.' : verifyError.message);
+      }
+
+      const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setShowCurrentPassword(false);
+      setShowNewPassword(false);
+      setShowConfirmPassword(false);
+      setPasswordFeedback({
+        tone: 'success',
+        title: 'Đã lưu mật khẩu mới',
+        message: 'Mật khẩu đã được cập nhật. Bạn có thể tiếp tục dùng phiên đăng nhập hiện tại.',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Không cập nhật được mật khẩu.';
+      setPasswordFeedback({
+        tone: 'error',
+        title: 'Không đổi được mật khẩu',
+        message,
+      });
+    } finally {
+      setSavingPassword(false);
+    }
+  };
 
   return (
     <View style={styles.contextPanel}>
@@ -2727,7 +2852,7 @@ function AccountContextBar({
         <View style={styles.accountIcon}>
           <ShieldCheck color={colors.primary} size={20} />
         </View>
-        <View style={styles.flex}>
+        <View style={styles.accountDetails}>
           <Text style={styles.accountName}>{profile.fullName || profile.email}</Text>
           <Text style={styles.accountMeta}>
             {roleLabel}
@@ -2735,10 +2860,132 @@ function AccountContextBar({
           </Text>
           <Text style={styles.accountSync}>{syncing ? 'Đang đồng bộ Supabase...' : 'Đã kết nối Supabase'}</Text>
         </View>
-        <Pressable accessibilityRole="button" onPress={onSignOut} style={styles.signOutButton}>
-          <Text style={styles.signOutText}>Đăng xuất</Text>
-        </Pressable>
+        <View style={styles.accountActions}>
+          <Pressable
+            accessibilityRole="button"
+            disabled={savingPassword}
+            onPress={togglePasswordForm}
+            style={({ pressed }) => [
+              styles.passwordToggleButton,
+              savingPassword && styles.buttonDisabled,
+              pressed && styles.pressed,
+            ]}
+          >
+            <KeyRound color={colors.onDark} size={15} />
+            <Text style={styles.passwordToggleText}>{showPasswordForm ? 'Đóng' : 'Đổi mật khẩu'}</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" onPress={onSignOut} style={styles.signOutButton}>
+            <Text style={styles.signOutText}>Đăng xuất</Text>
+          </Pressable>
+        </View>
       </View>
+
+      {showPasswordForm ? (
+        <View style={styles.passwordPanel}>
+          <View style={styles.passwordPanelHeader}>
+            <View style={styles.flex}>
+              <Text style={styles.passwordPanelTitle}>Đổi mật khẩu</Text>
+              <Text style={styles.passwordPanelHint}>
+                Mật khẩu được cập nhật trên Supabase và không được lưu dạng đọc được trong ứng dụng.
+              </Text>
+            </View>
+            <Pressable
+              accessibilityLabel="Đóng mục đổi mật khẩu"
+              accessibilityRole="button"
+              onPress={togglePasswordForm}
+              style={({ pressed }) => [styles.authFeedbackDismiss, pressed && styles.pressed]}
+            >
+              <X color={colors.muted} size={18} />
+            </Pressable>
+          </View>
+
+          {passwordFeedback ? (
+            <AuthFeedbackBanner feedback={passwordFeedback} onDismiss={() => setPasswordFeedback(null)} />
+          ) : null}
+
+          <FormField
+            autoComplete="current-password"
+            autoCapitalize="none"
+            autoCorrect={false}
+            icon={KeyRound}
+            label="Mật khẩu hiện tại"
+            onChangeText={setCurrentPassword}
+            placeholder="Nhập mật khẩu đang dùng"
+            secureTextEntry={!showCurrentPassword}
+            textContentType="password"
+            trailingAction={{
+              icon: showCurrentPassword ? EyeOff : Eye,
+              label: showCurrentPassword ? 'Ẩn mật khẩu hiện tại' : 'Hiện mật khẩu hiện tại',
+              onPress: () => setShowCurrentPassword((visible) => !visible),
+            }}
+            value={currentPassword}
+          />
+
+          <FormField
+            autoComplete="new-password"
+            autoCapitalize="none"
+            autoCorrect={false}
+            icon={KeyRound}
+            label="Mật khẩu mới"
+            onChangeText={setNewPassword}
+            placeholder={`Ít nhất ${minimumPasswordLength} ký tự`}
+            secureTextEntry={!showNewPassword}
+            textContentType="newPassword"
+            trailingAction={{
+              icon: showNewPassword ? EyeOff : Eye,
+              label: showNewPassword ? 'Ẩn mật khẩu mới' : 'Hiện mật khẩu mới',
+              onPress: () => setShowNewPassword((visible) => !visible),
+            }}
+            value={newPassword}
+          />
+
+          <FormField
+            autoComplete="new-password"
+            autoCapitalize="none"
+            autoCorrect={false}
+            icon={KeyRound}
+            label="Nhập lại mật khẩu mới"
+            onChangeText={setConfirmPassword}
+            placeholder="Nhập lại mật khẩu mới"
+            secureTextEntry={!showConfirmPassword}
+            textContentType="newPassword"
+            trailingAction={{
+              icon: showConfirmPassword ? EyeOff : Eye,
+              label: showConfirmPassword ? 'Ẩn mật khẩu xác nhận' : 'Hiện mật khẩu xác nhận',
+              onPress: () => setShowConfirmPassword((visible) => !visible),
+            }}
+            value={confirmPassword}
+          />
+
+          <View style={styles.passwordActionRow}>
+            <Pressable
+              accessibilityRole="button"
+              disabled={savingPassword}
+              onPress={togglePasswordForm}
+              style={({ pressed }) => [
+                styles.passwordCancelButton,
+                savingPassword && styles.buttonDisabled,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.passwordCancelText}>Hủy</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              disabled={savingPassword}
+              onPress={() => void savePassword()}
+              style={({ pressed }) => [
+                styles.passwordSaveButton,
+                savingPassword && styles.buttonDisabled,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Save color={colors.onDark} size={17} />
+              <Text style={styles.passwordSaveText}>{savingPassword ? 'Đang lưu...' : 'Lưu mật khẩu'}</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -3944,6 +4191,7 @@ function SectionTitle({
 
 function FormField({
   icon: Icon,
+  autoComplete,
   autoCapitalize,
   autoCorrect,
   keyboardType,
@@ -3952,10 +4200,12 @@ function FormField({
   onChangeText,
   placeholder,
   secureTextEntry,
+  textContentType,
   trailingAction,
   value,
 }: {
   icon?: typeof Clock3;
+  autoComplete?: TextInputProps['autoComplete'];
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
   autoCorrect?: boolean;
   keyboardType?: KeyboardTypeOptions;
@@ -3964,6 +4214,7 @@ function FormField({
   onChangeText: (value: string) => void;
   placeholder: string;
   secureTextEntry?: boolean;
+  textContentType?: TextInputProps['textContentType'];
   trailingAction?: {
     icon: typeof Clock3;
     label: string;
@@ -3979,6 +4230,7 @@ function FormField({
       <View style={[styles.inputShell, multiline && styles.inputShellMultiline]}>
         {Icon ? <Icon color={colors.muted} size={18} /> : null}
         <TextInput
+          autoComplete={autoComplete}
           autoCapitalize={autoCapitalize}
           autoCorrect={autoCorrect}
           keyboardType={keyboardType}
@@ -3988,6 +4240,7 @@ function FormField({
           placeholderTextColor="#9A806B"
           secureTextEntry={secureTextEntry}
           style={[styles.input, multiline && styles.inputMultiline]}
+          textContentType={textContentType}
           value={value}
         />
         {TrailingIcon && trailingAction ? (
@@ -4583,7 +4836,17 @@ const styles = StyleSheet.create({
   accountRow: {
     alignItems: 'center',
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 10,
+  },
+  accountDetails: {
+    flex: 1,
+    minWidth: 170,
+  },
+  accountActions: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
   },
   accountIcon: {
     alignItems: 'center',
@@ -4613,6 +4876,24 @@ const styles = StyleSheet.create({
     letterSpacing: 0,
     marginTop: 3,
   },
+  passwordToggleButton: {
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 5,
+    justifyContent: 'center',
+    minHeight: 36,
+    paddingHorizontal: 10,
+  },
+  passwordToggleText: {
+    color: colors.onDark,
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0,
+  },
   signOutButton: {
     alignItems: 'center',
     backgroundColor: colors.surfaceSoft,
@@ -4628,6 +4909,72 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '900',
     letterSpacing: 0,
+  },
+  passwordPanel: {
+    borderTopColor: colors.line,
+    borderTopWidth: 1,
+    gap: 12,
+    marginTop: 2,
+    paddingTop: 12,
+  },
+  passwordPanelHeader: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: 10,
+  },
+  passwordPanelTitle: {
+    color: colors.ink,
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 0,
+  },
+  passwordPanelHint: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0,
+    lineHeight: 17,
+    marginTop: 3,
+  },
+  passwordActionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'flex-end',
+  },
+  passwordCancelButton: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceSoft,
+    borderColor: colors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 42,
+    paddingHorizontal: 16,
+  },
+  passwordCancelText: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 0,
+  },
+  passwordSaveButton: {
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    borderRadius: 8,
+    flexDirection: 'row',
+    gap: 7,
+    justifyContent: 'center',
+    minHeight: 42,
+    paddingHorizontal: 16,
+  },
+  passwordSaveText: {
+    color: colors.onDark,
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 0,
+  },
+  buttonDisabled: {
+    opacity: 0.55,
   },
   contextPanel: {
     backgroundColor: colors.surfaceStrong,
