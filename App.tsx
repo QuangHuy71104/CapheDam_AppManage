@@ -830,6 +830,8 @@ const applySelfProfileOverrides = async (profile: UserProfile, user: User) => {
     fullName: localValue.fullName ?? metadataName ?? profile.fullName,
     phone: localValue.phone ?? metadataPhone ?? profile.phone,
     avatarUrl: localValue.avatarUrl ?? metadataAvatar ?? profile.avatarUrl,
+    employmentType: normalizeEmploymentType(metadata?.employmentType, profile.role),
+    startDate: normalizeProfileDate(metadata?.startDate, profile.startDate),
   };
 };
 
@@ -868,12 +870,32 @@ const mapProfileRow = (row: Record<string, unknown>, user: User): UserProfile =>
   };
 };
 
-const mapManagedProfileRow = (row: Record<string, unknown>): UserProfile => {
-  const fallbackUser = {
-    id: typeof row.id === 'string' ? row.id : '',
-    email: typeof row.email === 'string' ? row.email : '',
-  } as User;
-  return mapProfileRow(row, fallbackUser);
+const callAccountApi = async <T,>(method: 'GET' | 'PATCH', body?: Record<string, unknown>): Promise<T> => {
+  const { data } = await supabase.auth.getSession();
+  const accessToken = data.session?.access_token;
+  if (!accessToken) {
+    throw new Error('Phiên đăng nhập đã hết. Vui lòng đăng nhập lại.');
+  }
+
+  let response: Response;
+  try {
+    response = await fetch('/api/account', {
+      body: body ? JSON.stringify(body) : undefined,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      method,
+    });
+  } catch {
+    throw new Error('Không kết nối được. Vui lòng kiểm tra mạng rồi thử lại.');
+  }
+
+  const result = (await response.json().catch(() => ({}))) as T & { message?: string };
+  if (!response.ok) {
+    throw new Error(result.message || 'Chưa thực hiện được. Vui lòng thử lại.');
+  }
+  return result;
 };
 
 const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | null): Promise<UserProfile> => {
@@ -899,7 +921,7 @@ const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | n
   const fallbackEmail = normalizedUserEmail || signupDraft?.email || '';
 
   if (!fallbackEmail) {
-    throw new Error('Không lấy được email từ Supabase Auth.');
+    throw new Error('Không tìm thấy email của tài khoản.');
   }
 
   const fallbackProfile: UserProfile = {
@@ -941,13 +963,8 @@ const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | n
 };
 
 const loadManagedProfiles = async () => {
-  const { data: rows, error } = await supabase.from('profiles').select('*').order('full_name', { ascending: true });
-
-  if (error) {
-    throw error;
-  }
-
-  return (rows ?? []).map((row) => mapManagedProfileRow(row as Record<string, unknown>));
+  const result = await callAccountApi<{ profiles: UserProfile[] }>('GET');
+  return result.profiles;
 };
 
 const saveOwnProfile = async ({
@@ -959,22 +976,13 @@ const saveOwnProfile = async ({
   fullName: string;
   phone: string;
 }) => {
-  const { data: row, error } = await supabase.rpc('update_own_profile', {
-    p_avatar_url: avatarUrl,
-    p_full_name: fullName.trim(),
-    p_phone: phone.trim(),
+  const result = await callAccountApi<{ profile: UserProfile }>('PATCH', {
+    action: 'save-self',
+    avatarUrl,
+    fullName: fullName.trim(),
+    phone: phone.trim(),
   });
-
-  if (error) {
-    throw error;
-  }
-
-  const profileRow = Array.isArray(row) ? row[0] : row;
-  if (!profileRow) {
-    throw new Error('Supabase không trả về hồ sơ vừa cập nhật.');
-  }
-
-  return mapManagedProfileRow(profileRow as Record<string, unknown>);
+  return result.profile;
 };
 
 const saveManagedProfile = async (
@@ -982,28 +990,20 @@ const saveManagedProfile = async (
   patch: Pick<UserProfile, 'branchId' | 'employmentType' | 'role' | 'startDate'>,
 ) => {
   const branchId = patch.role === 'owner' ? null : patch.branchId || defaultBranchId;
-  const { data: row, error } = await supabase
-    .from('profiles')
-    .update({
-      branch_id: branchId,
-      employment_type: patch.employmentType,
-      role: patch.role,
-      start_date: patch.startDate,
-    })
-    .eq('id', id)
-    .select('*')
-    .single();
-
-  if (error) {
-    throw error;
-  }
-
-  return mapManagedProfileRow(row as Record<string, unknown>);
+  const result = await callAccountApi<{ profile: UserProfile }>('PATCH', {
+    action: 'save-work',
+    branchId,
+    employmentType: patch.employmentType,
+    role: patch.role,
+    startDate: patch.startDate,
+    targetId: id,
+  });
+  return result.profile;
 };
 
 const compressAvatarFile = async (file: File) => {
   if (!file.type.startsWith('image/')) {
-    throw new Error('Vui lòng chọn tệp ảnh JPG, PNG hoặc WebP.');
+    throw new Error('Vui lòng chọn một ảnh trong điện thoại.');
   }
 
   if (file.size > 10 * 1024 * 1024) {
@@ -1045,19 +1045,13 @@ const blobToDataUrl = (blob: Blob) =>
   });
 
 const uploadProfileAvatar = async (profileId: string, image: Blob) => {
-  const path = `${profileId}/avatar.webp`;
-  const { error } = await supabase.storage.from('avatars').upload(path, image, {
-    cacheControl: '3600',
-    contentType: 'image/webp',
-    upsert: true,
+  void profileId;
+  const imageData = await blobToDataUrl(image);
+  const result = await callAccountApi<{ avatarUrl: string }>('PATCH', {
+    action: 'save-avatar',
+    imageData,
   });
-
-  if (error) {
-    throw error;
-  }
-
-  const { data } = supabase.storage.from('avatars').getPublicUrl(path);
-  return `${data.publicUrl}?v=${Date.now()}`;
+  return result.avatarUrl;
 };
 
 const applyAttendanceScope = (profile: UserProfile) => {
@@ -1174,12 +1168,47 @@ const syncTableLabels: Record<string, string> = {
   shift_close_reports: 'báo ca',
 };
 
-const formatSupabaseError = (error: unknown) => {
-  if (!error || typeof error !== 'object') {
-    return error instanceof Error ? error.message : 'Lỗi không xác định';
+const getFriendlyErrorMessage = (error: unknown, fallback = 'Chưa thực hiện được. Vui lòng thử lại.') => {
+  const rawMessage =
+    error instanceof Error
+      ? error.message
+      : error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
+        ? error.message
+        : '';
+  const message = rawMessage.toLowerCase();
+
+  if (message.includes('invalid login credentials')) {
+    return 'Email hoặc mật khẩu chưa đúng.';
   }
-  const value = error as { code?: string; details?: string; hint?: string; message?: string };
-  return [value.message, value.details, value.hint, value.code ? `Mã ${value.code}` : ''].filter(Boolean).join(' • ');
+  if (message.includes('email not confirmed')) {
+    return 'Email này chưa được xác nhận.';
+  }
+  if (message.includes('already registered') || message.includes('already exists') || message.includes('duplicate')) {
+    return 'Thông tin này đã có. Vui lòng kiểm tra lại.';
+  }
+  if (message.includes('failed to fetch') || message.includes('network') || message.includes('timeout')) {
+    return 'Không kết nối được. Vui lòng kiểm tra mạng rồi thử lại.';
+  }
+  if (message.includes('row-level security') || message.includes('permission') || message.includes('not allowed')) {
+    return 'Tài khoản của bạn không được phép thực hiện việc này.';
+  }
+  if (message.includes('jwt') || message.includes('session') || message.includes('refresh token')) {
+    return 'Phiên đăng nhập đã hết. Vui lòng đăng nhập lại.';
+  }
+  if (
+    message.includes('schema') ||
+    message.includes('column') ||
+    message.includes('constraint') ||
+    message.includes('pgrst')
+  ) {
+    return 'Ứng dụng chưa sẵn sàng để lưu mục này. Vui lòng báo người phụ trách.';
+  }
+
+  return fallback;
+};
+
+const formatSupabaseError = (error: unknown) => {
+  return getFriendlyErrorMessage(error, 'Chưa lưu được. Vui lòng thử lại.');
 };
 
 const upsertSupabaseRows = async (tableName: string, rows: Record<string, unknown>[]) => {
@@ -1210,8 +1239,8 @@ const upsertSupabaseRows = async (tableName: string, rows: Record<string, unknow
 
     if (failedRows.length > 0) {
       throw new Error(
-        `${syncTableLabels[tableName] ?? tableName}: ${formatSupabaseError(firstError)} ` +
-          `(bản ghi: ${failedRows.slice(0, 3).join(', ')}${failedRows.length > 3 ? ', ...' : ''})`,
+        `${syncTableLabels[tableName] ?? 'Dữ liệu'}: ${formatSupabaseError(firstError)} ` +
+          `Có ${failedRows.length} mục chưa lưu được.`,
       );
     }
   }
@@ -1820,8 +1849,8 @@ export default function App() {
       if (error) {
         setAuthFeedback({
           tone: 'error',
-          title: 'Không kết nối được Supabase',
-          message: error.message,
+          title: 'Chưa kết nối được',
+          message: getFriendlyErrorMessage(error, 'Không tải được dữ liệu. Vui lòng kiểm tra mạng rồi thử lại.'),
         });
       }
 
@@ -1880,7 +1909,7 @@ export default function App() {
         pendingSignupRef.current = null;
       } catch (error) {
         if (!cancelled) {
-          const message = error instanceof Error ? error.message : 'Không tải được dữ liệu Supabase.';
+          const message = getFriendlyErrorMessage(error, 'Không tải được dữ liệu. Vui lòng thử lại.');
           setAuthFeedback({
             tone: 'error',
             title: 'Không vào được ứng dụng',
@@ -1932,7 +1961,7 @@ export default function App() {
       if (!navigator.onLine) {
         if (!cancelled) {
           setSyncingRemote(false);
-          setSyncError('Thiết bị đang mất mạng. Dữ liệu vẫn được giữ trên máy và sẽ tự đồng bộ khi có kết nối.');
+          setSyncError('Điện thoại đang mất mạng. Dữ liệu vẫn được giữ lại và sẽ tự lưu khi có mạng.');
         }
         return;
       }
@@ -1951,7 +1980,7 @@ export default function App() {
         if (attempt < 2) {
           retryTimeout = setTimeout(() => void runSync(attempt + 1), 1400 * (attempt + 1));
         } else {
-          const message = error instanceof Error ? error.message : 'Không đồng bộ được dữ liệu lên Supabase.';
+          const message = getFriendlyErrorMessage(error, 'Một số dữ liệu chưa lưu được. Vui lòng thử lại.');
           setSyncError(message);
         }
       } finally {
@@ -2363,7 +2392,7 @@ export default function App() {
   }, [pendingClosingExport]);
 
   const clearAllData = () => {
-    Alert.alert('Xóa dữ liệu?', 'Thao tác này xóa dữ liệu trong phạm vi tài khoản hiện tại trên máy và Supabase.', [
+    Alert.alert('Xóa dữ liệu?', 'Dữ liệu thuộc tài khoản hiện tại sẽ bị xóa khỏi điện thoại và hệ thống.', [
       { text: 'Hủy', style: 'cancel' },
       {
         text: 'Xóa',
@@ -2372,8 +2401,8 @@ export default function App() {
           setData(initialData);
           remoteSnapshotRef.current = JSON.stringify(initialData);
           clearRemoteAppData().catch((error) => {
-            const message = error instanceof Error ? error.message : 'Không xóa được dữ liệu Supabase.';
-            Alert.alert('Lỗi Supabase', message);
+            const message = getFriendlyErrorMessage(error, 'Chưa xóa được dữ liệu. Vui lòng thử lại.');
+            Alert.alert('Chưa xóa được', message);
           });
         },
       },
@@ -2385,7 +2414,7 @@ export default function App() {
     pendingSignupRef.current = null;
     setAuthFeedback(null);
     supabase.auth.signOut().catch((error) => {
-      const message = error instanceof Error ? error.message : 'Không đăng xuất được.';
+      const message = getFriendlyErrorMessage(error, 'Không đăng xuất được. Vui lòng thử lại.');
       Alert.alert('Lỗi đăng xuất', message);
     });
   };
@@ -2685,13 +2714,9 @@ function SupabaseSetupScreen() {
       <ScrollView contentContainerStyle={[styles.shell, styles.authContent]} keyboardShouldPersistTaps="handled">
         <View style={styles.authCard}>
           <Image source={logoImage} style={styles.authLogo} />
-          <Text style={styles.authTitle}>Cần cấu hình Supabase</Text>
+          <Text style={styles.authTitle}>Ứng dụng chưa sẵn sàng</Text>
           <Text style={styles.authHint}>
-            Tạo file .env từ .env.example rồi điền các biến VITE_SUPABASE_* từ Supabase project settings.
-          </Text>
-          <Text style={styles.codeText}>database/supabase-schema.sql</Text>
-          <Text style={styles.authHint}>
-            Bật Email provider. Với app nội bộ không gửi email, tắt Confirm email rồi chạy SQL này trong Supabase SQL Editor.
+            Chưa kết nối được nơi lưu dữ liệu. Vui lòng báo người phụ trách để được hỗ trợ.
           </Text>
         </View>
       </ScrollView>
@@ -2790,7 +2815,7 @@ function AuthScreen({
     onAuthFeedbackChange({
       tone: 'info',
       title: mode === 'signUp' ? 'Đang tạo tài khoản' : 'Đang đăng nhập',
-      message: mode === 'signUp' ? 'Đang xác thực thông tin tài khoản...' : 'Đang kiểm tra thông tin đăng nhập...',
+      message: mode === 'signUp' ? 'Đang tạo tài khoản cho bạn...' : 'Đang kiểm tra thông tin đăng nhập...',
     });
     setLoading(true);
 
@@ -2817,7 +2842,7 @@ function AuthScreen({
           onAuthFeedbackChange({
             tone: 'info',
             title: 'Tài khoản đã được tạo',
-            message: 'Supabase đang yêu cầu xác nhận email trước khi đăng nhập. Để dùng nội bộ không gửi email, hãy tắt Confirm email trong Supabase Auth.',
+            message: 'Hãy mở email và làm theo hướng dẫn xác nhận, sau đó quay lại đăng nhập.',
           });
         } else {
           onAuthFeedbackChange({
@@ -2845,7 +2870,10 @@ function AuthScreen({
       });
     } catch (error) {
       onSignupDraftChange(null);
-      const message = error instanceof Error ? error.message : 'Không đăng nhập được.';
+      const message = getFriendlyErrorMessage(
+        error,
+        mode === 'signUp' ? 'Không tạo được tài khoản. Vui lòng thử lại.' : 'Không đăng nhập được. Vui lòng thử lại.',
+      );
       onAuthFeedbackChange({
         tone: 'error',
         title: mode === 'signUp' ? 'Không tạo được tài khoản' : 'Không đăng nhập được',
@@ -2859,7 +2887,7 @@ function AuthScreen({
   const submitLabel = loading
     ? mode === 'signUp'
       ? 'Đang tạo tài khoản...'
-      : 'Đang xác thực...'
+      : 'Đang kiểm tra...'
     : mode === 'signUp'
       ? 'Tạo tài khoản nhân viên'
       : 'Đăng nhập';
@@ -3375,7 +3403,7 @@ function AccountPanel({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const roleLabel = roleOptions.find((option) => option.key === profile.role)?.label ?? 'Nhân viên';
   const workplace = profile.role === 'owner' ? 'Toàn hệ thống' : getBranchById(profile.branchId ?? branchId).name;
-  const employmentLabel = profile.employmentType === 'full_time' ? 'Full time' : 'Part time';
+  const employmentLabel = profile.employmentType === 'full_time' ? 'Toàn thời gian' : 'Bán thời gian';
 
   useEffect(() => {
     setFullName(profile.fullName);
@@ -3408,7 +3436,7 @@ function AccountPanel({
       return;
     }
     if (!file.type.startsWith('image/')) {
-      setFeedback({ tone: 'error', title: 'Tệp không hợp lệ', message: 'Vui lòng chọn một tệp ảnh.' });
+      setFeedback({ tone: 'error', title: 'Ảnh chưa dùng được', message: 'Vui lòng chọn một ảnh khác.' });
       return;
     }
 
@@ -3483,13 +3511,13 @@ function AccountPanel({
         tone: 'success',
         title: 'Đã lưu hồ sơ',
         message: localAvatarFallback
-          ? 'Tên và số điện thoại đã lưu vào tài khoản; ảnh đã lưu trên thiết bị này vì Storage chưa được cấu hình.'
+          ? 'Tên và số điện thoại đã lưu. Ảnh đang được giữ trên điện thoại này.'
           : databaseSynced
             ? 'Tên, số điện thoại và ảnh đại diện đã được cập nhật.'
-            : 'Tên và số điện thoại đã lưu vào tài khoản. Chạy schema mới để đồng bộ thêm với bảng hồ sơ.',
+            : 'Tên và số điện thoại đã lưu. Một số thông tin sẽ được lưu lại khi kết nối ổn định.',
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Không cập nhật được hồ sơ.';
+      const message = getFriendlyErrorMessage(error, 'Chưa lưu được thông tin cá nhân. Vui lòng thử lại.');
       setFeedback({
         tone: 'error',
         title: 'Không lưu được hồ sơ',
@@ -3557,7 +3585,7 @@ function AccountPanel({
               <Text style={styles.accountRolePillText}>{roleLabel}</Text>
             </View>
             <Text style={[styles.accountHeroSync, syncError && styles.accountHeroSyncError]}>
-              {syncing ? 'Đang đồng bộ...' : syncError ? 'Đồng bộ cần kiểm tra' : 'Đã đồng bộ Supabase'}
+              {syncing ? 'Đang lưu dữ liệu...' : syncError ? 'Có dữ liệu chưa lưu' : 'Dữ liệu đã được lưu'}
             </Text>
           </View>
 
@@ -3565,7 +3593,7 @@ function AccountPanel({
             <View style={styles.syncErrorCard}>
               <CircleAlert color={colors.rose} size={20} />
               <View style={styles.flex}>
-                <Text style={styles.syncErrorTitle}>Dữ liệu chưa đồng bộ hoàn toàn</Text>
+                <Text style={styles.syncErrorTitle}>Một số dữ liệu chưa được lưu</Text>
                 <Text style={styles.syncErrorText}>{syncError}</Text>
                 <Pressable
                   accessibilityRole="button"
@@ -3573,7 +3601,7 @@ function AccountPanel({
                   style={({ pressed }) => [styles.syncRetryButton, pressed && styles.pressed]}
                 >
                   <RefreshCcw color={colors.onDark} size={15} />
-                  <Text style={styles.syncRetryText}>Thử đồng bộ lại</Text>
+                  <Text style={styles.syncRetryText}>Thử lưu lại</Text>
                 </Pressable>
               </View>
             </View>
@@ -3687,7 +3715,7 @@ function OwnerStaffManager({
           setFeedback({
             tone: 'error',
             title: 'Không tải được danh sách nhân sự',
-            message: error instanceof Error ? error.message : 'Vui lòng thử lại.',
+            message: getFriendlyErrorMessage(error, 'Vui lòng kiểm tra mạng rồi thử lại.'),
           });
         }
       })
@@ -3716,7 +3744,7 @@ function OwnerStaffManager({
     }
 
     setSaving(true);
-    setFeedback({ tone: 'info', title: 'Đang cập nhật nhân sự', message: 'Đang lưu phân quyền và thông tin làm việc...' });
+    setFeedback({ tone: 'info', title: 'Đang cập nhật nhân viên', message: 'Đang lưu thông tin làm việc...' });
     try {
       const nextProfile = await saveManagedProfile(selectedProfile.id, {
         branchId: role === 'owner' ? null : branchId,
@@ -3730,13 +3758,10 @@ function OwnerStaffManager({
       }
       setFeedback({ tone: 'success', title: 'Đã cập nhật', message: `Đã lưu thông tin làm việc của ${nextProfile.fullName || nextProfile.email}.` });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Không cập nhật được hồ sơ nhân sự.';
       setFeedback({
         tone: 'error',
         title: 'Không cập nhật được',
-        message: message.includes('employment_type') || message.includes('start_date')
-          ? 'Cơ sở dữ liệu chưa được nâng cấp. Hãy chạy lại database/supabase-schema.sql rồi thử lại.'
-          : message,
+        message: getFriendlyErrorMessage(error, 'Chưa lưu được thông tin nhân viên. Vui lòng thử lại.'),
       });
     } finally {
       setSaving(false);
@@ -3749,7 +3774,7 @@ function OwnerStaffManager({
         <UsersRound color={colors.primary} size={21} />
         <View style={styles.flex}>
           <Text style={styles.accountSectionTitle}>Quản lý nhân sự</Text>
-          <Text style={styles.accountSectionHint}>Chọn một tài khoản để phân quyền và cập nhật thông tin làm việc.</Text>
+          <Text style={styles.accountSectionHint}>Chọn một nhân viên để đổi vị trí và thông tin làm việc.</Text>
         </View>
       </View>
 
@@ -3827,8 +3852,8 @@ function OwnerStaffManager({
                       onChange={(event) => setEmploymentType(event.target.value as EmploymentType)}
                       value={employmentType}
                     >
-                      <option value="full_time">Full time</option>
-                      <option value="part_time">Part time</option>
+                      <option value="full_time">Toàn thời gian</option>
+                      <option value="part_time">Bán thời gian</option>
                     </select>
                   </View>
 
@@ -3905,7 +3930,7 @@ function AccountSecuritySection({
       setPasswordFeedback({
         tone: 'error',
         title: 'Thiếu mật khẩu hiện tại',
-        message: 'Vui lòng nhập mật khẩu đang dùng để xác thực tài khoản.',
+        message: 'Vui lòng nhập mật khẩu đang dùng để kiểm tra tài khoản.',
       });
       return;
     }
@@ -3941,7 +3966,7 @@ function AccountSecuritySection({
     setPasswordFeedback({
       tone: 'info',
       title: 'Đang lưu mật khẩu',
-      message: 'Đang xác thực và cập nhật mật khẩu trên Supabase...',
+      message: 'Đang kiểm tra và lưu mật khẩu mới...',
     });
 
     try {
@@ -3952,7 +3977,11 @@ function AccountSecuritySection({
 
       if (verifyError) {
         const isInvalidPassword = verifyError.message.toLowerCase().includes('invalid login credentials');
-        throw new Error(isInvalidPassword ? 'Mật khẩu hiện tại không đúng.' : verifyError.message);
+        throw new Error(
+          isInvalidPassword
+            ? 'Mật khẩu hiện tại không đúng.'
+            : getFriendlyErrorMessage(verifyError, 'Chưa kiểm tra được mật khẩu hiện tại.'),
+        );
       }
 
       const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
@@ -3973,7 +4002,7 @@ function AccountSecuritySection({
         message: 'Mật khẩu đã được cập nhật. Bạn có thể tiếp tục dùng phiên đăng nhập hiện tại.',
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Không cập nhật được mật khẩu.';
+      const message = getFriendlyErrorMessage(error, 'Chưa đổi được mật khẩu. Vui lòng thử lại.');
       setPasswordFeedback({
         tone: 'error',
         title: 'Không đổi được mật khẩu',
@@ -4011,7 +4040,7 @@ function AccountSecuritySection({
             <View style={styles.flex}>
               <Text style={styles.passwordPanelTitle}>Đổi mật khẩu</Text>
               <Text style={styles.passwordPanelHint}>
-                Mật khẩu được cập nhật trên Supabase và không được lưu dạng đọc được trong ứng dụng.
+                Mật khẩu được lưu an toàn và không hiển thị trong ứng dụng.
               </Text>
             </View>
             <Pressable

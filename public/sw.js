@@ -1,4 +1,4 @@
-const CACHE_NAME = 'caphe-dam-web-v3';
+const CACHE_NAME = 'caphe-dam-web-v4';
 const APP_SHELL = ['/', '/manifest.json', '/pwa-192.png', '/pwa-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -23,7 +23,7 @@ self.addEventListener('fetch', (event) => {
   const request = event.request;
   const url = new URL(request.url);
 
-  if (request.method !== 'GET' || url.origin !== self.location.origin) {
+  if (request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) {
     return;
   }
 

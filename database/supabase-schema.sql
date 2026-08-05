@@ -92,7 +92,7 @@ create table if not exists public.attendance_sheets (
   user_id uuid references auth.users(id) on delete set null,
   branch_id text not null references public.branches(id) on update cascade on delete restrict,
   employee_name text not null,
-  month_key text not null check (month_key ~ '^\\d{4}-\\d{2}$'),
+  month_key text not null check (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
   days jsonb not null default '{}'::jsonb check (jsonb_typeof(days) = 'object'),
   employee_confirmed_at timestamptz,
   created_at timestamptz not null default now(),
@@ -103,7 +103,7 @@ create table if not exists public.attendance_sheets (
 create table if not exists public.branch_payroll_confirmations (
   id text primary key,
   branch_id text not null references public.branches(id) on update cascade on delete restrict,
-  month_key text not null check (month_key ~ '^\\d{4}-\\d{2}$'),
+  month_key text not null check (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
   manager_confirmed_at timestamptz,
   manager_cancelled_at timestamptz,
   manager_name text,
@@ -133,6 +133,20 @@ create table if not exists public.shift_close_reports (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Repair the month checks created by early versions of this script. The old
+-- expression rejected valid values such as 2026-08 on existing projects.
+alter table public.attendance_sheets
+  drop constraint if exists attendance_sheets_month_key_check;
+alter table public.attendance_sheets
+  add constraint attendance_sheets_month_key_check
+  check (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$');
+
+alter table public.branch_payroll_confirmations
+  drop constraint if exists branch_payroll_confirmations_month_key_check;
+alter table public.branch_payroll_confirmations
+  add constraint branch_payroll_confirmations_month_key_check
+  check (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$');
 
 create index if not exists attendance_sheets_branch_month_idx
   on public.attendance_sheets (branch_id, month_key);
