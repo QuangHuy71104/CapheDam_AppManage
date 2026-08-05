@@ -112,7 +112,7 @@ const listAllUsers = async (admin: any): Promise<User[]> => {
 };
 
 const createDemoDays = (monthKey: string, staffOffset: number) => {
-  const days: Record<string, { morning: string; afternoon: string }> = {};
+  const days: Record<string, { morning: string; afternoon: string; opening: string }> = {};
   const totalDays = getDaysInMonth(monthKey);
   const today = new Date();
   const monthIsCurrent = getMonthKey(today) === monthKey;
@@ -126,6 +126,7 @@ const createDemoDays = (monthKey: string, staffOffset: number) => {
     days[`${monthKey}-${String(day).padStart(2, '0')}`] = {
       morning: day % 3 === staffOffset % 3 ? '4' : '5',
       afternoon: day % 4 === staffOffset % 4 ? '3.5' : '4',
+      opening: day % 2 === staffOffset % 2 ? '0.5' : '',
     };
   }
 

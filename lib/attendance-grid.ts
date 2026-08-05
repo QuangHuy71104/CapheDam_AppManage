@@ -1,4 +1,4 @@
-export type AttendanceGridField = 'morning' | 'afternoon';
+export type AttendanceGridField = 'morning' | 'afternoon' | 'opening';
 
 export type PastedAttendanceCell = {
   dayOffset: number;
@@ -15,7 +15,7 @@ export const parseAttendanceGrid = (
   value: string,
   startField: AttendanceGridField,
 ): PastedAttendanceCell[] => {
-  const startColumn = startField === 'morning' ? 0 : 1;
+  const startColumn = startField === 'morning' ? 0 : startField === 'afternoon' ? 1 : 2;
   const rows = value.replace(/\r/g, '').split('\n');
   const result: PastedAttendanceCell[] = [];
 
@@ -29,8 +29,8 @@ export const parseAttendanceGrid = (
     row.split('\t').forEach((cell, columnIndex) => {
       const absoluteColumn = startColumn + columnIndex;
       result.push({
-        dayOffset: rowIndex + Math.floor(absoluteColumn / 2),
-        field: absoluteColumn % 2 === 0 ? 'morning' : 'afternoon',
+        dayOffset: rowIndex + Math.floor(absoluteColumn / 3),
+        field: absoluteColumn % 3 === 0 ? 'morning' : absoluteColumn % 3 === 1 ? 'afternoon' : 'opening',
         value: cell.trim(),
       });
     });

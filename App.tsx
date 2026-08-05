@@ -50,13 +50,19 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import { type Ref, useCallback, useEffect, useRef, useState } from 'react';
+import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import { webStorage } from './lib/storage';
 import { parseAttendanceGrid } from './lib/attendance-grid';
 import { StaffManagementScreen } from './StaffManagementScreen';
-import { WorkScheduleScreen } from './lib/work-schedule';
+import { WorkScheduleScreen, type PublishedWorkSchedule } from './lib/work-schedule';
+import {
+  getStaffDisplayName,
+  loadStaffManagement,
+  type ManagedStaffProfile,
+  type StaffBranchAlias,
+} from './lib/staff-management';
 
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients' | 'staffManagement' | 'schedule';
 type UserRole = 'owner' | 'manager' | 'employee';
@@ -121,9 +127,13 @@ type AttendanceEvent = {
   type: AttendanceType;
 };
 
+type AttendanceInputField = 'morning' | 'afternoon' | 'opening';
+
 type AttendanceDayEntry = {
   morning: string;
   afternoon: string;
+  opening: string;
+  scheduled?: Partial<Record<AttendanceInputField, string>>;
 };
 
 type AttendanceSheet = {
@@ -134,6 +144,8 @@ type AttendanceSheet = {
   monthKey: string;
   days: Record<string, AttendanceDayEntry>;
   employeeConfirmedAt?: string;
+  managerApprovedAt?: string;
+  managerApprovedBy?: string;
 };
 
 type BranchPayrollConfirmation = {
@@ -397,7 +409,8 @@ const managerTabItems: Array<{
   label: string;
   icon: typeof Clock3;
 }> = [
-  ...employeeTabItems,
+  { key: 'attendance', label: 'Duyệt lương', icon: WalletCards },
+  ...employeeTabItems.filter((item) => item.key !== 'attendance'),
   { key: 'staffManagement', label: 'Nhân sự', icon: UsersRound },
   { key: 'schedule', label: 'Xếp lịch', icon: CalendarDays },
 ];
@@ -647,6 +660,22 @@ const getDaysInMonth = (monthKey: string) => {
 
 const getAttendanceDayKey = (monthKey: string, day: number) => `${monthKey}-${String(day).padStart(2, '0')}`;
 
+const isSundayAttendanceDay = (monthKey: string, day: number) => {
+  const { month, year } = parseMonthKey(monthKey);
+  return new Date(year, month - 1, day).getDay() === 0;
+};
+
+const isSundayAttendanceDayKey = (dayKey: string) => new Date(`${dayKey}T12:00:00`).getDay() === 0;
+
+const formatHoursInput = (hours: number) => String(hours).replace('.', ',');
+
+const getLocalDateKey = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 const getWeekdayLabel = (monthKey: string, day: number) => {
   const { month, year } = parseMonthKey(monthKey);
   const date = new Date(year, month - 1, day);
@@ -739,9 +768,11 @@ const calculatePayroll = (sheet?: AttendanceSheet) => {
   const days = Object.values(sheet?.days ?? {});
   const morningHours = days.reduce((total, day) => total + toNumber(day.morning), 0);
   const afternoonHours = days.reduce((total, day) => total + toNumber(day.afternoon), 0);
+  const openingHours = days.reduce((total, day) => total + toNumber(day.opening), 0);
   const morningShifts = days.filter((day) => toNumber(day.morning) > 0).length;
   const afternoonShifts = days.filter((day) => toNumber(day.afternoon) > 0).length;
-  const totalHours = morningHours + afternoonHours;
+  const openingShifts = days.filter((day) => toNumber(day.opening) > 0).length;
+  const totalHours = morningHours + afternoonHours + openingHours;
   const breakfastMoney = morningShifts * payrollPolicy.breakfastPerMorningShift;
   const allowanceMoney = totalHours > 0 ? payrollPolicy.monthlyAllowance : 0;
   const wageMoney = Math.round(totalHours * payrollPolicy.hourlyRate);
@@ -754,6 +785,8 @@ const calculatePayroll = (sheet?: AttendanceSheet) => {
     breakfastMoney,
     morningHours,
     morningShifts,
+    openingHours,
+    openingShifts,
     totalHours,
     totalMoney,
     wageMoney,
@@ -771,9 +804,10 @@ const calculateBranchPayroll = (sheets: AttendanceSheet[]) =>
         totalMoney: total.totalMoney + payroll.totalMoney,
         morningShifts: total.morningShifts + payroll.morningShifts,
         afternoonShifts: total.afternoonShifts + payroll.afternoonShifts,
+        openingHours: total.openingHours + payroll.openingHours,
       };
     },
-    { employees: 0, totalHours: 0, totalMoney: 0, morningShifts: 0, afternoonShifts: 0 },
+    { employees: 0, totalHours: 0, totalMoney: 0, morningShifts: 0, afternoonShifts: 0, openingHours: 0 },
   );
 
 const getBranchPayrollConfirmation = (
@@ -781,6 +815,22 @@ const getBranchPayrollConfirmation = (
   branchId: string,
   monthKey: string,
 ) => confirmations.find((confirmation) => confirmation.branchId === branchId && confirmation.monthKey === monthKey);
+
+const invalidateBranchPayroll = (
+  confirmations: BranchPayrollConfirmation[],
+  branchId: string,
+  monthKey: string,
+) =>
+  confirmations.map((confirmation) =>
+    confirmation.branchId === branchId && confirmation.monthKey === monthKey && confirmation.managerConfirmedAt
+      ? {
+          ...confirmation,
+          managerConfirmedAt: undefined,
+          managerCancelledAt: new Date().toISOString(),
+          autoConfirmed: false,
+        }
+      : confirmation,
+  );
 
 const normalizeAppData = (value: Partial<AppData> | null | undefined): AppData => ({
   attendance: Array.isArray(value?.attendance) ? value.attendance : [],
@@ -877,9 +927,23 @@ const normalizeAttendanceDays = (value: unknown): Record<string, AttendanceDayEn
 
   return Object.entries(value as Record<string, Partial<AttendanceDayEntry>>).reduce<Record<string, AttendanceDayEntry>>(
     (days, [key, entry]) => {
+      const scheduled = entry.scheduled && typeof entry.scheduled === 'object' && !Array.isArray(entry.scheduled)
+        ? (Object.entries(entry.scheduled).reduce<Partial<Record<AttendanceInputField, string>>>((result, [field, hours]) => {
+            if (
+              (field === 'morning' || field === 'afternoon' || field === 'opening') &&
+              typeof hours === 'string' &&
+              !(field === 'afternoon' && isSundayAttendanceDayKey(key))
+            ) {
+              result[field] = hours;
+            }
+            return result;
+          }, {}))
+        : undefined;
       days[key] = {
         morning: typeof entry.morning === 'string' ? entry.morning : '',
-        afternoon: typeof entry.afternoon === 'string' ? entry.afternoon : '',
+        afternoon: isSundayAttendanceDayKey(key) ? '' : typeof entry.afternoon === 'string' ? entry.afternoon : '',
+        opening: typeof entry.opening === 'string' ? entry.opening : '',
+        ...(scheduled && Object.keys(scheduled).length > 0 ? { scheduled } : {}),
       };
       return days;
     },
@@ -1158,6 +1222,8 @@ const loadAppDataFromSupabase = async (profile: UserProfile): Promise<AppData> =
       monthKey: String(row.month_key),
       days: normalizeAttendanceDays(row.days),
       employeeConfirmedAt: typeof row.employee_confirmed_at === 'string' ? row.employee_confirmed_at : undefined,
+      managerApprovedAt: typeof row.manager_approved_at === 'string' ? row.manager_approved_at : undefined,
+      managerApprovedBy: typeof row.manager_approved_by === 'string' ? row.manager_approved_by : undefined,
     };
   });
 
@@ -1327,6 +1393,8 @@ const deduplicateAttendanceSheets = (sheets: AttendanceSheet[]) => {
       ...preferred,
       days: { ...secondary.days, ...preferred.days },
       employeeConfirmedAt: preferred.employeeConfirmedAt ?? secondary.employeeConfirmedAt,
+      managerApprovedAt: preferred.managerApprovedAt ?? secondary.managerApprovedAt,
+      managerApprovedBy: preferred.managerApprovedBy ?? secondary.managerApprovedBy,
       userId: preferred.userId ?? secondary.userId,
     });
   });
@@ -1404,9 +1472,11 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, sna
     branch_id: sheet.branchId,
     employee_name: sheet.employeeName,
     month_key: sheet.monthKey,
-    days: sheet.days,
-    employee_confirmed_at: sheet.employeeConfirmedAt ?? null,
-    updated_at: updatedAt,
+      days: sheet.days,
+      employee_confirmed_at: sheet.employeeConfirmedAt ?? null,
+      manager_approved_at: sheet.managerApprovedAt ?? null,
+      manager_approved_by: sheet.managerApprovedBy ?? null,
+      updated_at: updatedAt,
   }));
   const payrollRows = changedPayrolls.map((confirmation) => ({
     id: confirmation.id,
@@ -1480,7 +1550,7 @@ const autoConfirmEligiblePayrolls = (current: AppData, now = new Date()) => {
     const monthKeys = Array.from(
       new Set(
         current.attendanceSheets
-          .filter((sheet) => sheet.branchId === branch.id && sheet.employeeConfirmedAt)
+          .filter((sheet) => sheet.branchId === branch.id && sheet.managerApprovedAt)
           .map((sheet) => sheet.monthKey),
       ),
     );
@@ -1514,6 +1584,159 @@ const autoConfirmEligiblePayrolls = (current: AppData, now = new Date()) => {
   });
 
   return changed ? { ...current, branchPayrolls: nextConfirmations } : current;
+};
+
+type ScheduledEmployeeHours = {
+  employeeName: string;
+  days: Map<string, Partial<Record<AttendanceInputField, string>>>;
+};
+
+const attendanceFields: AttendanceInputField[] = ['morning', 'afternoon', 'opening'];
+
+// A published schedule owns only the hours it placed in the sheet. If a
+// manager later corrects a cell by hand, a re-send of the week keeps that
+// correction instead of overwriting it.
+const applyPublishedScheduleToAttendance = (current: AppData, schedule: PublishedWorkSchedule): AppData => {
+  const scheduledByEmployeeId = new Map<string, ScheduledEmployeeHours>();
+  const scheduledByName = new Map<string, ScheduledEmployeeHours>();
+  const affectedDateKeys = new Set<string>();
+
+  const weekStart = new Date(`${schedule.weekStart}T12:00:00`);
+  for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
+    const day = new Date(weekStart);
+    day.setDate(day.getDate() + dayOffset);
+    affectedDateKeys.add(getLocalDateKey(day));
+  }
+
+  schedule.assignments.forEach((assignment) => {
+    if (assignment.shift === 'afternoon' && isSundayAttendanceDayKey(assignment.dateKey)) {
+      return;
+    }
+
+    const normalizedName = assignment.employeeName.trim().toLocaleLowerCase('vi-VN');
+    if (!assignment.employeeId || !normalizedName) {
+      return;
+    }
+
+    let employee = scheduledByEmployeeId.get(assignment.employeeId);
+    if (!employee) {
+      employee = { employeeName: assignment.employeeName.trim(), days: new Map() };
+      scheduledByEmployeeId.set(assignment.employeeId, employee);
+      scheduledByName.set(normalizedName, employee);
+    }
+
+    const hoursForDay = employee.days.get(assignment.dateKey) ?? {};
+    hoursForDay[assignment.shift] = formatHoursInput(assignment.hours);
+    employee.days.set(assignment.dateKey, hoursForDay);
+    affectedDateKeys.add(assignment.dateKey);
+  });
+
+  const nextSheets = [...current.attendanceSheets];
+  scheduledByEmployeeId.forEach((employee, userId) => {
+    const monthKeys = new Set([...employee.days.keys()].map((dateKey) => getMonthKey(new Date(`${dateKey}T12:00:00`))));
+    monthKeys.forEach((monthKey) => {
+      const exists = nextSheets.some(
+        (sheet) =>
+          sheet.branchId === schedule.branchId &&
+          sheet.monthKey === monthKey &&
+          (sheet.userId === userId || (!sheet.userId && sheet.employeeName.trim().toLocaleLowerCase('vi-VN') === employee.employeeName.toLocaleLowerCase('vi-VN'))),
+      );
+      if (!exists) {
+        nextSheets.push(createEmptyAttendanceSheet(schedule.branchId, employee.employeeName, monthKey, userId));
+      }
+    });
+  });
+
+  let changed = false;
+  const attendanceSheets = nextSheets.map((sheet) => {
+    if (sheet.branchId !== schedule.branchId) {
+      return sheet;
+    }
+
+    const employee = sheet.userId
+      ? scheduledByEmployeeId.get(sheet.userId)
+      : scheduledByName.get(sheet.employeeName.trim().toLocaleLowerCase('vi-VN'));
+    const datesInSheet = [...affectedDateKeys].filter((dateKey) => getMonthKey(new Date(`${dateKey}T12:00:00`)) === sheet.monthKey);
+    if (datesInSheet.length === 0) {
+      return sheet;
+    }
+
+    let sheetChanged = false;
+    const nextDays = { ...sheet.days };
+
+    datesInSheet.forEach((dateKey) => {
+      const currentEntry = nextDays[dateKey] ?? { morning: '', afternoon: '', opening: '' };
+      const desired = employee?.days.get(dateKey);
+      const priorScheduled = currentEntry.scheduled ?? {};
+      const nextScheduled: Partial<Record<AttendanceInputField, string>> = {};
+      const nextEntry: AttendanceDayEntry = {
+        morning: currentEntry.morning ?? '',
+        afternoon: currentEntry.afternoon ?? '',
+        opening: currentEntry.opening ?? '',
+      };
+      let dayChanged = false;
+
+      attendanceFields.forEach((field) => {
+        const previousValue = priorScheduled[field];
+        const nextValue = desired?.[field];
+        const currentValue = currentEntry[field] ?? '';
+
+        if (previousValue !== undefined && (currentValue === previousValue || currentValue === '')) {
+          const replacement = nextValue ?? '';
+          if (nextEntry[field] !== replacement) {
+            nextEntry[field] = replacement;
+            dayChanged = true;
+          }
+        } else if (previousValue === undefined && nextValue !== undefined && currentValue === '') {
+          nextEntry[field] = nextValue;
+          dayChanged = true;
+        }
+
+        if (nextValue !== undefined) {
+          nextScheduled[field] = nextValue;
+        }
+      });
+
+      if (Object.keys(nextScheduled).length > 0) {
+        nextEntry.scheduled = nextScheduled;
+      }
+
+      if (JSON.stringify(currentEntry.scheduled ?? {}) !== JSON.stringify(nextScheduled)) {
+        dayChanged = true;
+      }
+
+      if (dayChanged) {
+        nextDays[dateKey] = nextEntry;
+        sheetChanged = true;
+      }
+    });
+
+    if (!sheetChanged) {
+      return sheet;
+    }
+
+    changed = true;
+    return {
+      ...sheet,
+      days: nextDays,
+      managerApprovedAt: undefined,
+      managerApprovedBy: undefined,
+    };
+  });
+
+  if (!changed) {
+    return current;
+  }
+
+  const branchPayrolls = [...affectedDateKeys]
+    .map((dateKey) => getMonthKey(new Date(`${dateKey}T12:00:00`)))
+    .filter((monthKey, index, values) => values.indexOf(monthKey) === index)
+    .reduce(
+      (confirmations, monthKey) => invalidateBranchPayroll(confirmations, schedule.branchId, monthKey),
+      current.branchPayrolls,
+    );
+
+  return { ...current, attendanceSheets, branchPayrolls };
 };
 
 const formatCupBalance = (status: CupBalanceStatus, variance: number) => {
@@ -2305,7 +2528,7 @@ export default function App() {
   const branchSheetsForMonth = data.attendanceSheets.filter(
     (sheet) => sheet.branchId === selectedBranchId && sheet.monthKey === selectedMonthKey,
   );
-  const confirmedBranchSheets = branchSheetsForMonth.filter((sheet) => sheet.employeeConfirmedAt);
+  const managerApprovedBranchSheets = branchSheetsForMonth.filter((sheet) => sheet.managerApprovedAt);
   const branchPayrollConfirmation = getBranchPayrollConfirmation(
     data.branchPayrolls,
     selectedBranchId,
@@ -2332,7 +2555,7 @@ export default function App() {
     currentRole === 'owner'
       ? confirmedOwnerBranches
       : currentRole === 'manager'
-        ? confirmedBranchSheets.length
+        ? managerApprovedBranchSheets.length
         : employeePayroll.totalHours;
   const ingredientMetric =
     currentRole === 'owner'
@@ -2343,7 +2566,13 @@ export default function App() {
       ? branches.length
       : selectedBranchClosings.filter((report) => isToday(report.timestamp)).length;
 
-  const updateAttendanceCell = (employee: string, dayKey: string, field: keyof AttendanceDayEntry, value: string) => {
+  const updateAttendanceCell = (
+    employee: string,
+    dayKey: string,
+    field: AttendanceInputField,
+    value: string,
+    targetUserId = profile?.id,
+  ) => {
     const trimmedName = employee.trim();
 
     if (!trimmedName) {
@@ -2351,7 +2580,12 @@ export default function App() {
       return;
     }
 
-    if (!isCurrentMonth(selectedMonthKey)) {
+    if (field === 'afternoon' && isSundayAttendanceDayKey(dayKey)) {
+      Alert.alert('Ca chiều Chủ Nhật nghỉ', 'Không thể chấm công ca chiều vào Chủ Nhật.');
+      return;
+    }
+
+    if (isFutureMonth(selectedMonthKey) || (currentRole !== 'manager' && !isCurrentMonth(selectedMonthKey))) {
       Alert.alert(
         isFutureMonth(selectedMonthKey) ? 'Tháng này chưa bắt đầu' : 'Chỉ chấm công tháng hiện tại',
         isFutureMonth(selectedMonthKey)
@@ -2362,9 +2596,9 @@ export default function App() {
     }
 
     setData((current) => {
-      const existingSheet = getAttendanceSheet(current.attendanceSheets, selectedBranchId, employee, selectedMonthKey, profile?.id);
+      const existingSheet = getAttendanceSheet(current.attendanceSheets, selectedBranchId, employee, selectedMonthKey, targetUserId);
 
-      if (existingSheet?.employeeConfirmedAt) {
+      if (currentRole !== 'manager' && (existingSheet?.employeeConfirmedAt || existingSheet?.managerApprovedAt)) {
         Alert.alert('Bảng lương đã xác nhận', 'Bạn cần bỏ xác nhận trước khi chỉnh sửa bảng công tháng này.');
         return current;
       }
@@ -2376,7 +2610,7 @@ export default function App() {
           selectedBranchId,
           employee,
           selectedMonthKey,
-          profile?.id,
+          targetUserId,
           (sheet) => ({
             ...sheet,
             days: {
@@ -2384,25 +2618,31 @@ export default function App() {
               [dayKey]: {
                 morning: sheet.days[dayKey]?.morning ?? '',
                 afternoon: sheet.days[dayKey]?.afternoon ?? '',
+                opening: sheet.days[dayKey]?.opening ?? '',
                 [field]: sanitizeShiftHours(value),
               },
             },
+            ...(currentRole === 'manager' ? { managerApprovedAt: undefined, managerApprovedBy: undefined } : {}),
           }),
         ),
+        ...(currentRole === 'manager'
+          ? { branchPayrolls: invalidateBranchPayroll(current.branchPayrolls, selectedBranchId, selectedMonthKey) }
+          : {}),
       };
     });
   };
 
   const updateAttendanceCells = (
     employee: string,
-    updates: Array<{ day: number; field: keyof AttendanceDayEntry; value: string }>,
+    updates: Array<{ day: number; field: AttendanceInputField; value: string }>,
+    targetUserId = profile?.id,
   ) => {
     const trimmedName = employee.trim();
     if (!trimmedName) {
       Alert.alert('Thiếu tên nhân viên', 'Vui lòng nhập tên nhân viên trước khi chấm công.');
       return;
     }
-    if (!isCurrentMonth(selectedMonthKey)) {
+    if (isFutureMonth(selectedMonthKey) || (currentRole !== 'manager' && !isCurrentMonth(selectedMonthKey))) {
       Alert.alert(
         isFutureMonth(selectedMonthKey) ? 'Tháng này chưa bắt đầu' : 'Chỉ chấm công tháng hiện tại',
         isFutureMonth(selectedMonthKey)
@@ -2413,14 +2653,19 @@ export default function App() {
     }
 
     const lastDay = getDaysInMonth(selectedMonthKey);
-    const validUpdates = updates.filter((update) => update.day >= 1 && update.day <= lastDay);
+    const validUpdates = updates.filter(
+      (update) =>
+        update.day >= 1 &&
+        update.day <= lastDay &&
+        !(update.field === 'afternoon' && isSundayAttendanceDay(selectedMonthKey, update.day)),
+    );
     if (validUpdates.length === 0) {
       return;
     }
 
     setData((current) => {
-      const existingSheet = getAttendanceSheet(current.attendanceSheets, selectedBranchId, employee, selectedMonthKey, profile?.id);
-      if (existingSheet?.employeeConfirmedAt) {
+      const existingSheet = getAttendanceSheet(current.attendanceSheets, selectedBranchId, employee, selectedMonthKey, targetUserId);
+      if (currentRole !== 'manager' && (existingSheet?.employeeConfirmedAt || existingSheet?.managerApprovedAt)) {
         Alert.alert('Bảng lương đã xác nhận', 'Bạn cần bỏ xác nhận trước khi chỉnh sửa bảng công tháng này.');
         return current;
       }
@@ -2432,7 +2677,7 @@ export default function App() {
           selectedBranchId,
           employee,
           selectedMonthKey,
-          profile?.id,
+          targetUserId,
           (sheet) => {
             const nextDays = { ...sheet.days };
             validUpdates.forEach(({ day, field, value }) => {
@@ -2440,12 +2685,20 @@ export default function App() {
               nextDays[dayKey] = {
                 morning: nextDays[dayKey]?.morning ?? '',
                 afternoon: nextDays[dayKey]?.afternoon ?? '',
+                opening: nextDays[dayKey]?.opening ?? '',
                 [field]: sanitizeShiftHours(value),
               };
             });
-            return { ...sheet, days: nextDays };
+            return {
+              ...sheet,
+              days: nextDays,
+              ...(currentRole === 'manager' ? { managerApprovedAt: undefined, managerApprovedBy: undefined } : {}),
+            };
           },
         ),
+        ...(currentRole === 'manager'
+          ? { branchPayrolls: invalidateBranchPayroll(current.branchPayrolls, selectedBranchId, selectedMonthKey) }
+          : {}),
       };
     });
   };
@@ -2453,8 +2706,9 @@ export default function App() {
   const pasteAttendanceGrid = (
     employee: string,
     startDay: number,
-    startField: keyof AttendanceDayEntry,
+    startField: AttendanceInputField,
     pastedText: string,
+    targetUserId = profile?.id,
   ) => {
     updateAttendanceCells(
       employee,
@@ -2463,21 +2717,7 @@ export default function App() {
         field: cell.field,
         value: cell.value,
       })),
-    );
-  };
-
-  const fillAttendanceColumn = (employee: string, field: keyof AttendanceDayEntry, value: string) => {
-    if (!isNumericText(sanitizeShiftHours(value))) {
-      Alert.alert('Số giờ chưa hợp lệ', 'Vui lòng nhập một số giờ hợp lệ trước khi điền tất cả.');
-      return;
-    }
-    updateAttendanceCells(
-      employee,
-      Array.from({ length: getDaysInMonth(selectedMonthKey) }, (_, index) => ({
-        day: index + 1,
-        field,
-        value,
-      })),
+      targetUserId,
     );
   };
 
@@ -2498,6 +2738,10 @@ export default function App() {
     }
 
     const currentSheet = getAttendanceSheet(data.attendanceSheets, selectedBranchId, trimmedName, selectedMonthKey, profile?.id);
+    if (currentSheet?.managerApprovedAt) {
+      Alert.alert('Bảng lương đã được duyệt', 'Quản lí cần mở lại bảng lương trước khi có thay đổi mới.');
+      return;
+    }
     const payroll = calculatePayroll(currentSheet);
 
     if (payroll.totalHours <= 0) {
@@ -2535,6 +2779,12 @@ export default function App() {
       return;
     }
 
+    const currentSheet = getAttendanceSheet(data.attendanceSheets, selectedBranchId, trimmedName, selectedMonthKey, profile?.id);
+    if (currentSheet?.managerApprovedAt) {
+      Alert.alert('Bảng lương đã được duyệt', 'Chỉ quản lí mới có thể mở lại bảng công này để chỉnh sửa.');
+      return;
+    }
+
     setData((current) => ({
       ...current,
       attendanceSheets: current.attendanceSheets.map((sheet) =>
@@ -2548,9 +2798,67 @@ export default function App() {
     }));
   };
 
+  const approveEmployeePayroll = (employee: string, userId: string) => {
+    const trimmedName = employee.trim();
+    if (!trimmedName || !userId) {
+      return;
+    }
+    if (isFutureMonth(selectedMonthKey)) {
+      Alert.alert('Tháng này chưa bắt đầu', 'Chỉ có thể duyệt bảng lương từ tháng hiện tại trở về trước.');
+      return;
+    }
+
+    const sheet = getAttendanceSheet(data.attendanceSheets, selectedBranchId, trimmedName, selectedMonthKey, userId);
+    if (calculatePayroll(sheet).totalHours <= 0) {
+      Alert.alert('Chưa có giờ công', 'Hãy gửi lịch hoặc nhập giờ công trước khi duyệt bảng lương của nhân viên.');
+      return;
+    }
+
+    setData((current) => ({
+      ...current,
+      attendanceSheets: updateSheetCollection(
+        current.attendanceSheets,
+        selectedBranchId,
+        trimmedName,
+        selectedMonthKey,
+        userId,
+        (currentSheet) => ({
+          ...currentSheet,
+          managerApprovedAt: new Date().toISOString(),
+          managerApprovedBy: profile?.fullName || 'Quản lí chi nhánh',
+        }),
+      ),
+      branchPayrolls: invalidateBranchPayroll(current.branchPayrolls, selectedBranchId, selectedMonthKey),
+    }));
+  };
+
+  const reopenEmployeePayroll = (employee: string, userId: string) => {
+    const trimmedName = employee.trim();
+    if (!trimmedName || !userId) {
+      return;
+    }
+
+    setData((current) => ({
+      ...current,
+      attendanceSheets: current.attendanceSheets.map((sheet) =>
+        sheet.branchId === selectedBranchId &&
+        sheet.monthKey === selectedMonthKey &&
+        (sheet.userId === userId ||
+          (!sheet.userId && sheet.employeeName.trim().toLocaleLowerCase('vi-VN') === trimmedName.toLocaleLowerCase('vi-VN')))
+          ? { ...sheet, managerApprovedAt: undefined, managerApprovedBy: undefined }
+          : sheet,
+      ),
+      branchPayrolls: invalidateBranchPayroll(current.branchPayrolls, selectedBranchId, selectedMonthKey),
+    }));
+  };
+
+  const publishSchedule = (publishedSchedule: PublishedWorkSchedule) => {
+    setData((current) => applyPublishedScheduleToAttendance(current, publishedSchedule));
+  };
+
   const confirmBranchPayroll = () => {
-    if (confirmedBranchSheets.length === 0) {
-      Alert.alert('Chưa có bảng lương nhân viên', 'Quản lí chỉ xác nhận được khi có nhân viên đã xác nhận bảng lương.');
+    if (managerApprovedBranchSheets.length === 0) {
+      Alert.alert('Chưa có bảng lương đã duyệt', 'Quản lí cần duyệt ít nhất một bảng lương nhân viên trước khi gửi chủ cửa hàng.');
       return;
     }
 
@@ -2854,7 +3162,7 @@ export default function App() {
             <View style={styles.metricsRow}>
               <MetricTile
                 icon={CalendarCheck2}
-                label={currentRole === 'owner' ? 'Đã nhận lương' : currentRole === 'manager' ? 'NV đã gửi' : 'Giờ tháng'}
+                label={currentRole === 'owner' ? 'Đã nhận lương' : currentRole === 'manager' ? 'NV đã duyệt' : 'Giờ tháng'}
                 value={formatNumber(attendanceMetric)}
                 tone="teal"
               />
@@ -2869,23 +3177,19 @@ export default function App() {
 
             {activeTab === 'attendance' && (
               currentRole === 'manager' ? (
-                <ManagerAttendanceScreen
+                <ManagerPayrollScreen
                   branch={activeBranch}
                   branchPayroll={branchPayrollConfirmation}
-                  confirmedSheets={confirmedBranchSheets}
-                  employeeName={signedEmployeeName}
+                  managerId={profile.id}
                   monthKey={selectedMonthKey}
                   onCancelBranchPayroll={cancelBranchPayroll}
-                  onCancelEmployeePayroll={cancelEmployeePayroll}
+                  onReopenEmployeePayroll={reopenEmployeePayroll}
                   onConfirmBranchPayroll={confirmBranchPayroll}
-                  onConfirmEmployeePayroll={confirmEmployeePayroll}
-                  onFillColumn={fillAttendanceColumn}
+                  onApproveEmployeePayroll={approveEmployeePayroll}
                   onMonthChange={setSelectedMonthKey}
-                  onNameChange={setEmployeeName}
                   onPasteGrid={pasteAttendanceGrid}
                   onUpdateCell={updateAttendanceCell}
-                  pendingSheets={branchSheetsForMonth.filter((sheet) => !sheet.employeeConfirmedAt)}
-                  sheet={employeeSheet}
+                  sheets={branchSheetsForMonth}
                 />
               ) : (
                 <EmployeeAttendanceScreen
@@ -2894,7 +3198,6 @@ export default function App() {
                   monthKey={selectedMonthKey}
                   onConfirmPayroll={confirmEmployeePayroll}
                   onCancelPayroll={cancelEmployeePayroll}
-                  onFillColumn={fillAttendanceColumn}
                   onMonthChange={setSelectedMonthKey}
                   onNameChange={setEmployeeName}
                   onPasteGrid={pasteAttendanceGrid}
@@ -3005,7 +3308,7 @@ export default function App() {
             ) : null}
 
             {activeTab === 'schedule' && currentRole === 'manager' ? (
-              <WorkScheduleScreen branch={activeBranch} managerId={profile.id} />
+              <WorkScheduleScreen branch={activeBranch} managerId={profile.id} onPublish={publishSchedule} />
             ) : null}
           </ScrollView>
 
@@ -4746,7 +5049,6 @@ function EmployeeAttendanceScreen({
   monthKey,
   onCancelPayroll,
   onConfirmPayroll,
-  onFillColumn,
   onMonthChange,
   onNameChange,
   onPasteGrid,
@@ -4758,11 +5060,10 @@ function EmployeeAttendanceScreen({
   monthKey: string;
   onCancelPayroll: (employeeName: string) => void;
   onConfirmPayroll: (employeeName: string) => void;
-  onFillColumn: (employeeName: string, field: keyof AttendanceDayEntry, value: string) => void;
   onMonthChange: (value: string) => void;
   onNameChange: (value: string) => void;
-  onPasteGrid: (employeeName: string, startDay: number, startField: keyof AttendanceDayEntry, pastedText: string) => void;
-  onUpdateCell: (employeeName: string, dayKey: string, field: keyof AttendanceDayEntry, value: string) => void;
+  onPasteGrid: (employeeName: string, startDay: number, startField: AttendanceInputField, pastedText: string, userId?: string) => void;
+  onUpdateCell: (employeeName: string, dayKey: string, field: AttendanceInputField, value: string, userId?: string) => void;
   sheet?: AttendanceSheet;
 }) {
   const trimmedName = employeeName.trim();
@@ -4781,17 +5082,23 @@ function EmployeeAttendanceScreen({
         value={employeeName}
       />
       <AttendanceNotice editable={editable} monthKey={monthKey} sheet={sheet} />
-      <AttendanceSheetTable
+      <AttendanceSheetTableV2
         editable={editable}
         employeeName={trimmedName}
         monthKey={monthKey}
-        onFillColumn={onFillColumn}
         onPasteGrid={onPasteGrid}
         onUpdateCell={onUpdateCell}
         sheet={sheet}
       />
       <PayrollSummary payroll={payroll} />
-      {sheet?.employeeConfirmedAt ? (
+      {sheet?.managerApprovedAt ? (
+        <StatusPanel
+          icon={CheckCircle2}
+          title="Bảng lương đã được duyệt"
+          text="Bảng công đã được quản lí chốt; bạn không cần gửi lại."
+          tone="success"
+        />
+      ) : sheet?.employeeConfirmedAt ? (
         <>
           <StatusPanel
             icon={CheckCircle2}
@@ -4983,6 +5290,17 @@ function AttendanceNotice({
     );
   }
 
+  if (sheet?.managerApprovedAt) {
+    return (
+      <StatusPanel
+        icon={CheckCircle2}
+        title="Bảng lương đã được quản lí duyệt"
+        text="Quản lí đã khóa bảng công này. Liên hệ quản lí nếu cần điều chỉnh giờ làm."
+        tone="success"
+      />
+    );
+  }
+
   if (sheet?.employeeConfirmedAt) {
     return (
       <StatusPanel
@@ -4998,7 +5316,7 @@ function AttendanceNotice({
     <StatusPanel
       icon={editable ? Clock3 : UserRound}
       title={editable ? 'Đang mở chấm công' : 'Cần nhập tên nhân viên'}
-      text={editable ? 'Nhập số giờ theo từng ngày, ca sáng và ca chiều.' : 'Tên nhân viên là khóa để lưu bảng công theo tháng.'}
+      text={editable ? 'Lịch làm sẽ tự điền giờ công; có thể kiểm tra ca sáng, ca chiều và mở cửa theo từng ngày.' : 'Tên nhân viên là khóa để lưu bảng công theo tháng.'}
       tone={editable ? 'success' : 'neutral'}
     />
   );
@@ -5145,11 +5463,324 @@ function AttendanceSheetTable({
   );
 }
 
+function ManagerPayrollScreen({
+  branch,
+  branchPayroll,
+  managerId,
+  monthKey,
+  onApproveEmployeePayroll,
+  onCancelBranchPayroll,
+  onConfirmBranchPayroll,
+  onMonthChange,
+  onPasteGrid,
+  onReopenEmployeePayroll,
+  onUpdateCell,
+  sheets,
+}: {
+  branch: Branch;
+  branchPayroll?: BranchPayrollConfirmation;
+  managerId: string;
+  monthKey: string;
+  onApproveEmployeePayroll: (employeeName: string, userId: string) => void;
+  onCancelBranchPayroll: () => void;
+  onConfirmBranchPayroll: () => void;
+  onMonthChange: (value: string) => void;
+  onPasteGrid: (employeeName: string, startDay: number, startField: AttendanceInputField, pastedText: string, userId?: string) => void;
+  onReopenEmployeePayroll: (employeeName: string, userId: string) => void;
+  onUpdateCell: (employeeName: string, dayKey: string, field: AttendanceInputField, value: string, userId?: string) => void;
+  sheets: AttendanceSheet[];
+}) {
+  const [staff, setStaff] = useState<ManagedStaffProfile[]>([]);
+  const [aliases, setAliases] = useState<StaffBranchAlias[]>([]);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string | null>(null);
+  const [loadingStaff, setLoadingStaff] = useState(true);
+  const [staffError, setStaffError] = useState<string | null>(null);
+
+  const refreshStaff = async () => {
+    setLoadingStaff(true);
+    try {
+      const result = await loadStaffManagement();
+      setStaff(result.profiles);
+      setAliases(result.aliases);
+      setStaffError(null);
+    } catch (error) {
+      setStaffError(getFriendlyErrorMessage(error, 'Chưa tải được danh sách nhân viên.'));
+    } finally {
+      setLoadingStaff(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshStaff();
+  }, [managerId]);
+
+  const branchEmployees = useMemo(
+    () =>
+      staff
+        .filter((person) => person.role === 'employee' && person.branchId === branch.id)
+        .sort((first, second) => {
+          const firstName = getStaffDisplayName(first, aliases, managerId, branch.id);
+          const secondName = getStaffDisplayName(second, aliases, managerId, branch.id);
+          return firstName.localeCompare(secondName, 'vi');
+        }),
+    [aliases, branch.id, managerId, staff],
+  );
+
+  useEffect(() => {
+    if (selectedEmployeeId && !branchEmployees.some((person) => person.id === selectedEmployeeId)) {
+      setSelectedEmployeeId(null);
+    }
+  }, [branchEmployees, selectedEmployeeId]);
+
+  const selectedEmployee = branchEmployees.find((person) => person.id === selectedEmployeeId);
+  const selectedSheet = selectedEmployee
+    ? getAttendanceSheet(sheets, branch.id, selectedEmployee.fullName, monthKey, selectedEmployee.id)
+    : undefined;
+  const approvedSheets = sheets.filter((sheet) => sheet.managerApprovedAt);
+  const aggregate = calculateBranchPayroll(approvedSheets);
+  const locked = isManagerCancelLocked(monthKey);
+
+  return (
+    <View style={styles.screen}>
+      <SectionTitle icon={WalletCards} title="Duyệt bảng lương" subtitle={`${branch.name} · chọn nhân viên để kiểm tra từng bảng`} />
+      <MonthNavigator monthKey={monthKey} onChange={onMonthChange} />
+      <StatusPanel
+        icon={CalendarCheck2}
+        title="Lịch làm tự lên bảng công"
+        text="Sau khi gửi lịch, quản lí chỉ cần kiểm tra, chỉnh số giờ khi cần rồi duyệt bảng lương của từng nhân viên. Có thể xem và sửa các tháng trước."
+        tone="success"
+      />
+
+      <View style={styles.managerPayrollList}>
+        <View style={styles.managerPayrollListHeading}>
+          <View style={styles.managerPayrollListTitleWrap}>
+            <UsersRound color={colors.primary} size={18} />
+            <Text style={styles.managerPayrollListTitle}>Danh sách nhân viên</Text>
+          </View>
+          <Pressable accessibilityLabel="Tải lại danh sách nhân viên" onPress={() => void refreshStaff()} style={styles.managerPayrollRefresh}>
+            <RefreshCcw color={colors.primary} size={16} />
+          </Pressable>
+        </View>
+        {loadingStaff ? (
+          <Text style={styles.managerPayrollEmpty}>Đang tải danh sách nhân viên...</Text>
+        ) : staffError ? (
+          <Text style={styles.managerPayrollError}>{staffError}</Text>
+        ) : branchEmployees.length === 0 ? (
+          <Text style={styles.managerPayrollEmpty}>Chưa có nhân viên nào thuộc chi nhánh này.</Text>
+        ) : (
+          <View style={styles.managerPayrollEmployeeGrid}>
+            {branchEmployees.map((employee) => {
+              const sheet = getAttendanceSheet(sheets, branch.id, employee.fullName, monthKey, employee.id);
+              const payroll = calculatePayroll(sheet);
+              const selected = selectedEmployeeId === employee.id;
+              const displayName = getStaffDisplayName(employee, aliases, managerId, branch.id);
+              const status = sheet?.managerApprovedAt ? 'Đã duyệt' : payroll.totalHours > 0 ? 'Chờ duyệt' : 'Chưa có lịch';
+              return (
+                <Pressable
+                  accessibilityRole="button"
+                  key={employee.id}
+                  onPress={() => setSelectedEmployeeId(employee.id)}
+                  style={({ pressed }) => [styles.managerPayrollEmployeeCard, selected && styles.managerPayrollEmployeeCardSelected, pressed && styles.pressed]}
+                >
+                  <View style={styles.flex}>
+                    <Text style={[styles.managerPayrollEmployeeName, selected && styles.managerPayrollEmployeeNameSelected]}>{displayName}</Text>
+                    <Text style={[styles.managerPayrollEmployeeMeta, selected && styles.managerPayrollEmployeeMetaSelected]}>
+                      {formatNumber(payroll.totalHours)} giờ · {status}
+                    </Text>
+                  </View>
+                  <ChevronRight color={selected ? colors.onDark : colors.muted} size={18} />
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
+      </View>
+
+      {selectedEmployee ? (
+        <View style={styles.managerPayrollDetail}>
+          <View style={styles.managerPayrollDetailHeading}>
+            <View style={styles.flex}>
+              <Text style={styles.managerPayrollDetailEyebrow}>BẢNG LƯƠNG NHÂN VIÊN</Text>
+              <Text style={styles.managerPayrollDetailName}>{getStaffDisplayName(selectedEmployee, aliases, managerId, branch.id)}</Text>
+              <Text style={styles.managerPayrollDetailHint}>Quản lí có thể sửa trực tiếp các giờ công, kể cả ở tháng trước.</Text>
+            </View>
+            <Pressable accessibilityLabel="Đóng bảng lương nhân viên" onPress={() => setSelectedEmployeeId(null)} style={styles.managerPayrollClose}>
+              <X color={colors.muted} size={18} />
+            </Pressable>
+          </View>
+          <AttendanceSheetTableV2
+            editable={!isFutureMonth(monthKey)}
+            employeeName={selectedEmployee.fullName}
+            monthKey={monthKey}
+            onPasteGrid={onPasteGrid}
+            onUpdateCell={onUpdateCell}
+            sheet={selectedSheet}
+            targetUserId={selectedEmployee.id}
+          />
+          <PayrollSummary payroll={calculatePayroll(selectedSheet)} />
+          {selectedSheet?.managerApprovedAt ? (
+            <>
+              <StatusPanel
+                icon={CheckCircle2}
+                title="Đã duyệt bảng lương nhân viên"
+                text={`${selectedSheet.managerApprovedBy ?? 'Quản lí'} duyệt lúc ${formatDateTime(selectedSheet.managerApprovedAt)}.`}
+                tone="success"
+              />
+              <PrimaryButton
+                icon={XCircle}
+                label="Mở lại để chỉnh sửa"
+                onPress={() => onReopenEmployeePayroll(selectedEmployee.fullName, selectedEmployee.id)}
+                tone="danger"
+              />
+            </>
+          ) : (
+            <PrimaryButton
+              icon={CheckCheck}
+              label="Duyệt bảng lương nhân viên"
+              onPress={() => onApproveEmployeePayroll(selectedEmployee.fullName, selectedEmployee.id)}
+              tone="primary"
+            />
+          )}
+        </View>
+      ) : null}
+
+      <View style={styles.managerPanel}>
+        <SectionTitle icon={ClipboardCheck} title="Tổng hợp gửi chủ cửa hàng" subtitle="Chỉ bao gồm các bảng lương đã được quản lí duyệt" />
+        <PayrollAggregateSummary aggregate={aggregate} />
+        {branchPayroll?.managerConfirmedAt ? (
+          <>
+            <StatusPanel
+              icon={branchPayroll.autoConfirmed ? CalendarCheck2 : CheckCircle2}
+              title={branchPayroll.autoConfirmed ? 'Hệ thống đã tự xác nhận' : 'Đã gửi chủ cửa hàng'}
+              text={`${branchPayroll.managerName ?? 'Quản lí'} xác nhận lúc ${formatDateTime(branchPayroll.managerConfirmedAt)}.`}
+              tone="success"
+            />
+            <PrimaryButton
+              icon={XCircle}
+              label={locked ? 'Đã khóa hủy xác nhận' : 'Hủy xác nhận để chỉnh sửa'}
+              onPress={onCancelBranchPayroll}
+              tone="danger"
+            />
+          </>
+        ) : (
+          <PrimaryButton
+            icon={ShieldCheck}
+            label={`Gửi ${approvedSheets.length} bảng lương đã duyệt`}
+            onPress={onConfirmBranchPayroll}
+            tone="primary"
+          />
+        )}
+      </View>
+    </View>
+  );
+}
+
+function AttendanceSheetTableV2({
+  editable,
+  employeeName,
+  monthKey,
+  onPasteGrid,
+  onUpdateCell,
+  sheet,
+  targetUserId,
+}: {
+  editable: boolean;
+  employeeName: string;
+  monthKey: string;
+  onPasteGrid: (employeeName: string, startDay: number, startField: AttendanceInputField, pastedText: string, userId?: string) => void;
+  onUpdateCell: (employeeName: string, dayKey: string, field: AttendanceInputField, value: string, userId?: string) => void;
+  sheet?: AttendanceSheet;
+  targetUserId?: string;
+}) {
+  const days = Array.from({ length: getDaysInMonth(monthKey) }, (_, index) => index + 1);
+  const canEdit = editable && Boolean(employeeName.trim());
+
+  const handlePaste = (
+    event: React.ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>,
+    day: number,
+    field: AttendanceInputField,
+  ) => {
+    const pastedText = event.clipboardData.getData('text/plain');
+    if (!pastedText.includes('\t') && !pastedText.includes('\n')) {
+      return;
+    }
+    event.preventDefault();
+    onPasteGrid(employeeName, day, field, pastedText, targetUserId);
+  };
+
+  return (
+    <>
+      <View style={styles.attendanceQuickCard}>
+        <View style={styles.attendanceQuickHeading}>
+          <Text style={styles.attendanceQuickTitle}>Bảng công theo lịch làm</Text>
+          <Text style={styles.attendanceQuickHint}>
+            Lịch đã gửi tự điền 6 giờ ca sáng, 5 giờ ca chiều và 0,5 giờ mở cửa. Có thể dán vùng dữ liệu từ bảng tính để điều chỉnh; chiều Chủ Nhật luôn khóa.
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.attendanceTable}>
+        <View style={[styles.attendanceRow, styles.attendanceHeaderRow]}>
+          <Text style={[styles.attendanceCell, styles.attendanceDateCell]}>Ngày</Text>
+          <Text style={[styles.attendanceCell, styles.attendanceWeekdayCell]}>Thứ</Text>
+          <Text style={styles.attendanceCell}>Ca sáng</Text>
+          <Text style={styles.attendanceCell}>Ca chiều</Text>
+          <Text style={styles.attendanceCell}>Mở cửa</Text>
+        </View>
+        {days.map((day) => {
+          const dayKey = getAttendanceDayKey(monthKey, day);
+          const sunday = isSundayAttendanceDay(monthKey, day);
+          const value = sheet?.days[dayKey] ?? { morning: '', afternoon: '', opening: '' };
+          const afternoonEditable = canEdit && !sunday;
+
+          return (
+            <View key={dayKey} style={[styles.attendanceRow, sunday && styles.attendanceSundayRow]}>
+              <Text style={[styles.attendanceCell, styles.attendanceDateCell]}>{String(day).padStart(2, '0')}</Text>
+              <Text style={[styles.attendanceCell, styles.attendanceWeekdayCell]}>{getWeekdayLabel(monthKey, day)}</Text>
+              <TextInput
+                editable={canEdit}
+                keyboardType={decimalKeyboard}
+                onChangeText={(inputValue) => onUpdateCell(employeeName, dayKey, 'morning', inputValue, targetUserId)}
+                onPaste={(event) => handlePaste(event, day, 'morning')}
+                placeholder="0"
+                placeholderTextColor="#9A806B"
+                style={[styles.attendanceInput, !canEdit && styles.attendanceInputReadonly]}
+                value={value.morning}
+              />
+              <TextInput
+                editable={afternoonEditable}
+                keyboardType={decimalKeyboard}
+                onChangeText={(inputValue) => onUpdateCell(employeeName, dayKey, 'afternoon', inputValue, targetUserId)}
+                onPaste={(event) => handlePaste(event, day, 'afternoon')}
+                placeholder={sunday ? 'Nghỉ' : '0'}
+                placeholderTextColor="#9A806B"
+                style={[styles.attendanceInput, !afternoonEditable && styles.attendanceInputReadonly, sunday && styles.attendanceSundayInput]}
+                value={value.afternoon}
+              />
+              <TextInput
+                editable={canEdit}
+                keyboardType={decimalKeyboard}
+                onChangeText={(inputValue) => onUpdateCell(employeeName, dayKey, 'opening', inputValue, targetUserId)}
+                onPaste={(event) => handlePaste(event, day, 'opening')}
+                placeholder="0"
+                placeholderTextColor="#9A806B"
+                style={[styles.attendanceInput, !canEdit && styles.attendanceInputReadonly]}
+                value={value.opening}
+              />
+            </View>
+          );
+        })}
+      </View>
+    </>
+  );
+}
+
 function PayrollSummary({ payroll }: { payroll: ReturnType<typeof calculatePayroll> }) {
   return (
     <View style={styles.payrollSummary}>
       <SummaryLine label="Tổng ca sáng" value={payroll.morningShifts.toString()} />
       <SummaryLine label="Tổng ca chiều" value={payroll.afternoonShifts.toString()} />
+      <SummaryLine label="Giờ mở cửa" value={formatNumber(payroll.openingHours)} />
       <SummaryLine label="Tổng giờ làm" value={formatNumber(payroll.totalHours)} />
       <SummaryLine label="Tiền ăn sáng" value={formatCurrency(payroll.breakfastMoney)} />
       <SummaryLine label="Phụ cấp" value={formatCurrency(payroll.allowanceMoney)} />
@@ -5168,6 +5799,7 @@ function PayrollAggregateSummary({
       <SummaryLine label="Nhân viên đã gửi" value={aggregate.employees.toString()} />
       <SummaryLine label="Ca sáng" value={aggregate.morningShifts.toString()} />
       <SummaryLine label="Ca chiều" value={aggregate.afternoonShifts.toString()} />
+      <SummaryLine label="Giờ mở cửa" value={formatNumber(aggregate.openingHours)} />
       <SummaryLine label="Tổng giờ" value={formatNumber(aggregate.totalHours)} />
       <SummaryLine label="Tổng lương" strong value={formatCurrency(aggregate.totalMoney)} />
     </View>
@@ -5235,7 +5867,7 @@ function OwnerPayrollScreen({
   const selectedBranch = getBranchById(branchId);
   const branchPayroll = getBranchPayrollConfirmation(branchPayrolls, branchId, monthKey);
   const confirmedSheets = sheets.filter(
-    (sheet) => sheet.branchId === branchId && sheet.monthKey === monthKey && sheet.employeeConfirmedAt,
+    (sheet) => sheet.branchId === branchId && sheet.monthKey === monthKey && sheet.managerApprovedAt,
   );
   const aggregate = calculateBranchPayroll(confirmedSheets);
   const received = Boolean(branchPayroll?.managerConfirmedAt);
@@ -8325,6 +8957,9 @@ const styles = StyleSheet.create({
   attendanceHeaderRow: {
     backgroundColor: colors.amberSoft,
   },
+  attendanceSundayRow: {
+    backgroundColor: '#F8ECE5',
+  },
   attendanceCell: {
     color: colors.ink,
     flex: 1,
@@ -8361,6 +8996,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#E6D9C8',
     borderColor: colors.line,
     color: colors.muted,
+  },
+  attendanceSundayInput: {
+    backgroundColor: '#F0DCD5',
+    borderColor: 'rgba(180, 72, 60, 0.25)',
+    color: colors.rose,
   },
   payrollSummary: {
     backgroundColor: colors.surfaceStrong,
@@ -8403,6 +9043,128 @@ const styles = StyleSheet.create({
   managerPanel: {
     gap: 12,
     marginTop: 8,
+  },
+  managerPayrollList: {
+    backgroundColor: colors.surfaceStrong,
+    borderColor: colors.line,
+    borderRadius: 16,
+    borderWidth: 1,
+    gap: 11,
+    padding: 13,
+  },
+  managerPayrollListHeading: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  managerPayrollListTitleWrap: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 7,
+  },
+  managerPayrollListTitle: {
+    color: colors.ink,
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  managerPayrollRefresh: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceSoft,
+    borderColor: colors.line,
+    borderRadius: 9,
+    borderWidth: 1,
+    height: 34,
+    justifyContent: 'center',
+    width: 34,
+  },
+  managerPayrollEmpty: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  managerPayrollError: {
+    color: colors.rose,
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 18,
+  },
+  managerPayrollEmployeeGrid: {
+    gap: 7,
+  },
+  managerPayrollEmployeeCard: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.line,
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'space-between',
+    minHeight: 58,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+  },
+  managerPayrollEmployeeCardSelected: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  managerPayrollEmployeeName: {
+    color: colors.ink,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  managerPayrollEmployeeNameSelected: {
+    color: colors.onDark,
+  },
+  managerPayrollEmployeeMeta: {
+    color: colors.muted,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  managerPayrollEmployeeMetaSelected: {
+    color: 'rgba(255, 248, 238, 0.74)',
+  },
+  managerPayrollDetail: {
+    backgroundColor: colors.surface,
+    borderColor: colors.primarySoft,
+    borderRadius: 17,
+    borderWidth: 1,
+    gap: 12,
+    padding: 13,
+  },
+  managerPayrollDetailHeading: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'space-between',
+  },
+  managerPayrollDetailEyebrow: {
+    color: colors.accent,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.45,
+  },
+  managerPayrollDetailName: {
+    color: colors.ink,
+    fontSize: 18,
+    fontWeight: '950',
+    lineHeight: 23,
+    marginTop: 2,
+  },
+  managerPayrollDetailHint: {
+    color: colors.muted,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 3,
+  },
+  managerPayrollClose: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceSoft,
+    borderRadius: 9,
+    height: 34,
+    justifyContent: 'center',
+    width: 34,
   },
   pendingText: {
     color: colors.muted,

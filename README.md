@@ -10,7 +10,9 @@ Web app/PWA nội bộ, xây bằng React DOM + Vite và tối ưu cho nhân vi�
 - Đổi mật khẩu sau khi xác thực lại mật khẩu hiện tại. Mật khẩu không được lưu dạng đọc được trong localStorage hay cơ sở dữ liệu ứng dụng.
 - Hồ sơ tài khoản với avatar, số điện thoại, vị trí, chi nhánh, hình thức làm việc và thâm niên.
 - Nhân viên tự sửa tên, số điện thoại, ảnh đại diện; Chủ cửa hàng quản lý vai trò, chi nhánh, Full/Part time và ngày bắt đầu của nhân sự.
-- Chấm công, tính lương, xác nhận bảng lương theo cấp nhân viên → quản lý → chủ cửa hàng.
+- Xếp lịch theo thẻ tên gọn, chọn giờ về ca sáng 9h/10h/11h/đủ ca, tự điền bảng công khi gửi lịch và tải ảnh lịch dạng bảng.
+- Chấm công, tính lương và duyệt lương theo từng nhân viên; quản lí có thể xem/sửa các tháng trước trước khi gửi tổng hợp cho chủ cửa hàng.
+- Ca chiều Chủ Nhật luôn bị khóa; giờ mặc định từ lịch là 6 giờ sáng, 5 giờ chiều và 0,5 giờ mở cửa.
 - Báo đồ, báo ca, tổng hợp theo chi nhánh và xuất báo cáo thành ảnh.
 - Dữ liệu vận hành đồng bộ với Supabase Postgres; phiên đăng nhập được duy trì bằng localStorage.
 - Manifest và service worker để cài như PWA sau khi triển khai HTTPS.

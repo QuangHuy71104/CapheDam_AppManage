@@ -122,6 +122,8 @@ create table if not exists public.attendance_sheets (
   month_key text not null check (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
   days jsonb not null default '{}'::jsonb check (jsonb_typeof(days) = 'object'),
   employee_confirmed_at timestamptz,
+  manager_approved_at timestamptz,
+  manager_approved_by text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (branch_id, user_id, month_key)
@@ -168,6 +170,13 @@ alter table public.attendance_sheets
 alter table public.attendance_sheets
   add constraint attendance_sheets_month_key_check
   check (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$');
+
+-- Per-employee approval lets a manager review, correct and approve payroll
+-- one person at a time before sending the branch total to the owner.
+alter table public.attendance_sheets
+  add column if not exists manager_approved_at timestamptz;
+alter table public.attendance_sheets
+  add column if not exists manager_approved_by text;
 
 -- Payroll sheets belong to an account, not a display name. This allows two
 -- employees with the same name and preserves a sheet when a name is edited.
@@ -261,9 +270,12 @@ as $$
 declare
   day_key text;
   day_slots jsonb;
+  assignment jsonb;
   employee_id text;
   employee_ids jsonb;
+  morning_end_hour integer;
   scheduled_date date;
+  seen_employee_ids text[];
   shift_key text;
 begin
   if extract(isodow from new.week_start) <> 1 then
@@ -305,16 +317,40 @@ begin
         raise exception 'Ca làm không hợp lệ.';
       end if;
 
-      if exists (
-        select 1
-        from jsonb_array_elements_text(employee_ids) as scheduled_employee(id)
-        group by scheduled_employee.id
-        having count(*) > 1
-      ) then
-        raise exception 'Một nhân sự không thể xuất hiện hai lần trong cùng một ca.';
+      if shift_key = 'afternoon' and extract(dow from scheduled_date) = 0 and jsonb_array_length(employee_ids) > 0 then
+        raise exception 'Không thể xếp ca chiều vào Chủ Nhật.';
       end if;
 
-      for employee_id in select jsonb_array_elements_text(employee_ids) loop
+      seen_employee_ids := '{}';
+      for assignment in select value from jsonb_array_elements(employee_ids) loop
+        -- Legacy schedules used a bare UUID string. New schedules persist an
+        -- object so a morning assignment can remember its chosen end hour.
+        if jsonb_typeof(assignment) = 'string' then
+          employee_id := trim(both '"' from assignment::text);
+          morning_end_hour := null;
+        elsif jsonb_typeof(assignment) = 'object' and jsonb_typeof(assignment->'employeeId') = 'string' then
+          employee_id := assignment->>'employeeId';
+          morning_end_hour := nullif(assignment->>'morningEndHour', '')::integer;
+        else
+          raise exception 'Nhân sự trong ca làm không hợp lệ.';
+        end if;
+
+        if employee_id is null or btrim(employee_id) = '' then
+          raise exception 'Nhân sự trong ca làm không hợp lệ.';
+        end if;
+
+        if employee_id = any(seen_employee_ids) then
+          raise exception 'Một nhân sự không thể xuất hiện hai lần trong cùng một ca.';
+        end if;
+        seen_employee_ids := array_append(seen_employee_ids, employee_id);
+
+        if shift_key = 'morning' and morning_end_hour is not null and morning_end_hour not in (9, 10, 11, 12) then
+          raise exception 'Giờ về ca sáng phải là 9h, 10h, 11h hoặc 12h.';
+        end if;
+        if shift_key <> 'morning' and morning_end_hour is not null then
+          raise exception 'Chỉ ca sáng mới được đặt giờ về.';
+        end if;
+
         if not exists (
           select 1
           from public.profiles as employee_profile
