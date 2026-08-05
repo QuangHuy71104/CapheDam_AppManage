@@ -51,7 +51,7 @@ import {
   XCircle,
 } from 'lucide-react-native';
 import { captureRef } from 'react-native-view-shot';
-import { useEffect, useRef, useState } from 'react';
+import { type Ref, useEffect, useRef, useState } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 
@@ -297,8 +297,6 @@ const roleOptions: Array<{ key: UserRole; label: string; description: string; ic
     icon: ShieldCheck,
   },
 ];
-
-const signupRoleOptions = roleOptions.filter((option) => option.key === 'employee');
 
 const payrollPolicy = {
   hourlyRate: 24000,
@@ -2328,20 +2326,18 @@ function AuthScreen({
   const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [fullName, setFullName] = useState('');
-  const [role, setRole] = useState<UserRole>('employee');
   const [branchId, setBranchId] = useState(defaultBranchId);
   const [loading, setLoading] = useState(false);
+  const emailInputRef = useRef<TextInput>(null);
+  const passwordInputRef = useRef<TextInput>(null);
 
   const handleModeChange = (nextMode: 'signIn' | 'signUp') => {
     setMode(nextMode);
     setPassword('');
-    setConfirmPassword('');
     setShowPassword(false);
-    setShowConfirmPassword(false);
+    setFullName('');
     onAuthFeedbackChange(null);
     onSignupDraftChange(null);
   };
@@ -2352,14 +2348,6 @@ function AuthScreen({
 
   const handleFullNameChange = (value: string) => {
     setFullName(value);
-  };
-
-  const handleRoleChange = (nextRole: UserRole) => {
-    setRole(nextRole);
-
-    if (nextRole === 'owner') {
-      setBranchId(defaultBranchId);
-    }
   };
 
   const handleBranchChange = (value: string) => {
@@ -2398,15 +2386,6 @@ function AuthScreen({
         tone: 'error',
         title: 'Thiếu họ tên',
         message: 'Vui lòng nhập tên để tạo hồ sơ nhân viên.',
-      });
-      return;
-    }
-
-    if (mode === 'signUp' && password !== confirmPassword) {
-      onAuthFeedbackChange({
-        tone: 'error',
-        title: 'Mật khẩu không khớp',
-        message: 'Vui lòng nhập lại mật khẩu xác nhận.',
       });
       return;
     }
@@ -2494,190 +2473,275 @@ function AuthScreen({
   const submitLabel = loading
     ? mode === 'signUp'
       ? 'Đang tạo tài khoản...'
-      : 'Đang đăng nhập...'
+      : 'Đang xác thực...'
     : mode === 'signUp'
-      ? 'Tạo tài khoản'
+      ? 'Tạo tài khoản nhân viên'
       : 'Đăng nhập';
+  const isSignIn = mode === 'signIn';
 
   return (
     <SafeAreaView style={[styles.safeArea, styles.authSafeArea]}>
       <StatusBar backgroundColor={colors.primary} style="light" />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.keyboardView}>
         <ScrollView
-          contentContainerStyle={[styles.authPage, viewportWidth >= 540 && styles.authPageWide]}
+          contentContainerStyle={styles.authScrollContent}
           keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
         >
-          <View style={styles.authBrand}>
-            <View style={styles.authBrandMark}>
-              <Image source={logoImage} style={styles.authBrandLogo} />
-            </View>
-            <View style={styles.authBrandCopy}>
-              <Text style={styles.authEyebrow}>HỆ THỐNG NỘI BỘ</Text>
-              <Text style={styles.authBrandTitle}>Cà phê Đạm</Text>
-            </View>
-          </View>
+          <View style={[styles.authViewport, viewportWidth >= 560 && styles.authViewportWide]}>
+            <View style={styles.authHero}>
+              <View pointerEvents="none" style={styles.authHeroOrbLarge} />
+              <View pointerEvents="none" style={styles.authHeroOrbSmall} />
 
-          <View style={styles.authPanel}>
-            <View style={styles.authPanelHeader}>
-              <View style={styles.authPanelIcon}>
-                <DoorClosed color={colors.primary} size={21} />
-              </View>
-              <View style={styles.flex}>
-                <Text style={styles.authPanelTitle}>{mode === 'signIn' ? 'Đăng nhập' : 'Tạo tài khoản'}</Text>
-                <Text style={styles.authPanelHint}>
-                  {mode === 'signIn'
-                    ? 'Dùng email và mật khẩu đã được quán cấp.'
-                    : 'Tạo tài khoản nhân viên cho một chi nhánh.'}
-                </Text>
-              </View>
-            </View>
-
-            {feedback ? <AuthFeedbackBanner feedback={feedback} onDismiss={() => onAuthFeedbackChange(null)} /> : null}
-
-            <View style={styles.authModeRow}>
-              {(['signIn', 'signUp'] as const).map((item) => {
-                const selected = mode === item;
-
-                return (
-                  <Pressable
-                    accessibilityRole="button"
-                    key={item}
-                    onPress={() => handleModeChange(item)}
-                    style={({ pressed }) => [
-                      styles.authModeButton,
-                      selected && styles.authModeButtonActive,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <Text style={[styles.authModeText, selected && styles.authModeTextActive]}>
-                      {item === 'signIn' ? 'Đăng nhập' : 'Tạo tài khoản'}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            <FormField
-              autoComplete="email"
-              autoCapitalize="none"
-              autoCorrect={false}
-              icon={Mail}
-              keyboardType="email-address"
-              label="Email"
-              onChangeText={handleEmailChange}
-              placeholder="ten@congty.com"
-              value={email}
-            />
-
-            <FormField
-              autoComplete={mode === 'signIn' ? 'current-password' : 'new-password'}
-              autoCapitalize="none"
-              autoCorrect={false}
-              icon={KeyRound}
-              label="Mật khẩu"
-              onChangeText={setPassword}
-              placeholder={`Ít nhất ${minimumPasswordLength} ký tự`}
-              secureTextEntry={!showPassword}
-              textContentType={mode === 'signIn' ? 'password' : 'newPassword'}
-              trailingAction={{
-                icon: showPassword ? EyeOff : Eye,
-                label: showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu',
-                onPress: () => setShowPassword((visible) => !visible),
-              }}
-              value={password}
-            />
-
-            {mode === 'signUp' ? (
-              <FormField
-                autoComplete="new-password"
-                autoCapitalize="none"
-                autoCorrect={false}
-                icon={KeyRound}
-                label="Nhập lại mật khẩu"
-                onChangeText={setConfirmPassword}
-                placeholder="Nhập lại mật khẩu"
-                secureTextEntry={!showConfirmPassword}
-                textContentType="newPassword"
-                trailingAction={{
-                  icon: showConfirmPassword ? EyeOff : Eye,
-                  label: showConfirmPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu',
-                  onPress: () => setShowConfirmPassword((visible) => !visible),
-                }}
-                value={confirmPassword}
-              />
-            ) : null}
-
-            {mode === 'signUp' ? (
-              <>
-                <FormField
-                  icon={UserRound}
-                  label="Họ tên"
-                  onChangeText={handleFullNameChange}
-                  placeholder="Nhập tên hiển thị trong bảng công"
-                  value={fullName}
-                />
-                <Text style={styles.contextLabel}>Vai trò</Text>
-                <View style={styles.roleGrid}>
-                  {signupRoleOptions.map((option) => {
-                    const Icon = option.icon;
-                    const selected = role === option.key;
-
-                    return (
-                      <Pressable
-                        accessibilityRole="button"
-                        key={option.key}
-                        onPress={() => handleRoleChange(option.key)}
-                        style={({ pressed }) => [
-                          styles.roleOption,
-                          selected && styles.roleOptionActive,
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <Icon color={selected ? colors.onDark : colors.primary} size={18} />
-                        <View style={styles.flex}>
-                          <Text style={[styles.roleOptionTitle, selected && styles.roleOptionTitleActive]}>
-                            {option.label}
-                          </Text>
-                          <Text style={[styles.roleOptionText, selected && styles.roleOptionTextActive]}>
-                            {option.description}
-                          </Text>
-                        </View>
-                      </Pressable>
-                    );
-                  })}
+              <View style={styles.authBrandRow}>
+                <View style={styles.authHeroLogoFrame}>
+                  <Image source={logoImage} style={styles.authHeroLogo} />
                 </View>
+                <View style={styles.flex}>
+                  <Text style={styles.authHeroBrandName}>CÀ PHÊ ĐẠM</Text>
+                  <Text style={styles.authHeroBrandMeta}>Ứng dụng vận hành nội bộ</Text>
+                </View>
+              </View>
 
-                <Text style={styles.authHint}>
-                  Quyền quản lí hoặc chủ cửa hàng được cấp sau khi tài khoản đã được tạo.
+              <View style={styles.authHeroCopy}>
+                <View style={styles.authSystemPill}>
+                  <View style={styles.authSystemDot} />
+                  <Text style={styles.authSystemText}>Hệ thống đang hoạt động</Text>
+                </View>
+                <Text style={styles.authHeroTitle}>
+                  {isSignIn ? 'Chào bạn,\nsẵn sàng vào ca?' : 'Bắt đầu cùng\nCà phê Đạm'}
                 </Text>
+                <Text style={styles.authHeroSubtitle}>
+                  {isSignIn
+                    ? 'Đăng nhập để chấm công, báo đồ và hoàn tất công việc trong ca.'
+                    : 'Tạo tài khoản nhân viên và chọn đúng chi nhánh đang làm việc.'}
+                </Text>
+              </View>
+            </View>
 
-                <Text style={styles.contextLabel}>Chi nhánh</Text>
-                <BranchPills branchId={branchId} onBranchChange={handleBranchChange} />
-              </>
-            ) : null}
+            <View style={styles.authSheet}>
+              <View style={styles.authSheetHandle} />
 
-            <AuthActionButton
-              label={submitLabel}
-              onPress={submit}
-            />
+              <View style={styles.authSheetHeader}>
+                <View style={styles.flex}>
+                  <Text style={styles.authSheetEyebrow}>{isSignIn ? 'ĐĂNG NHẬP NHANH' : 'TÀI KHOẢN MỚI'}</Text>
+                  <Text style={styles.authSheetTitle}>{isSignIn ? 'Vào hệ thống' : 'Tạo tài khoản'}</Text>
+                  <Text style={styles.authSheetHint}>
+                    {isSignIn ? 'Dùng tài khoản được quán cấp.' : 'Chỉ dành cho nhân viên của quán.'}
+                  </Text>
+                </View>
+                <View style={styles.authSheetIcon}>
+                  <DoorClosed color={colors.primary} size={22} />
+                </View>
+              </View>
+
+              {feedback ? <AuthFeedbackBanner feedback={feedback} onDismiss={() => onAuthFeedbackChange(null)} /> : null}
+
+              <View style={styles.authFields}>
+                {!isSignIn ? (
+                  <AuthFormField
+                    autoComplete="name"
+                    autoCapitalize="words"
+                    autoCorrect={false}
+                    icon={UserRound}
+                    label="Họ và tên"
+                    nativeID="full-name"
+                    onChangeText={handleFullNameChange}
+                    onSubmitEditing={() => emailInputRef.current?.focus()}
+                    placeholder="Tên hiển thị trong bảng công"
+                    returnKeyType="next"
+                    textContentType="name"
+                    value={fullName}
+                  />
+                ) : null}
+
+                <AuthFormField
+                  autoComplete="email"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  icon={Mail}
+                  inputRef={emailInputRef}
+                  keyboardType="email-address"
+                  label="Email"
+                  nativeID="email"
+                  onChangeText={handleEmailChange}
+                  onSubmitEditing={() => passwordInputRef.current?.focus()}
+                  placeholder="ten@congty.com"
+                  returnKeyType="next"
+                  textContentType="emailAddress"
+                  value={email}
+                />
+
+                <AuthFormField
+                  autoComplete={isSignIn ? 'current-password' : 'new-password'}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  icon={KeyRound}
+                  inputRef={passwordInputRef}
+                  label="Mật khẩu"
+                  nativeID={isSignIn ? 'current-password' : 'new-password'}
+                  onChangeText={setPassword}
+                  onSubmitEditing={() => void submit()}
+                  placeholder={`Ít nhất ${minimumPasswordLength} ký tự`}
+                  returnKeyType="go"
+                  secureTextEntry={!showPassword}
+                  textContentType={isSignIn ? 'password' : 'newPassword'}
+                  trailingAction={{
+                    icon: showPassword ? EyeOff : Eye,
+                    label: showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu',
+                    onPress: () => setShowPassword((visible) => !visible),
+                  }}
+                  value={password}
+                />
+              </View>
+
+              {!isSignIn ? (
+                <View style={styles.authBranchSection}>
+                  <View style={styles.authSectionHeading}>
+                    <Building2 color={colors.primary} size={18} />
+                    <Text style={styles.authSectionTitle}>Chi nhánh làm việc</Text>
+                  </View>
+                  <Text style={styles.authSectionHint}>Chọn đúng chi nhánh để nhận dữ liệu ca làm việc.</Text>
+                  <BranchPills branchId={branchId} onBranchChange={handleBranchChange} />
+                </View>
+              ) : null}
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ disabled: loading }}
+                disabled={loading}
+                onPress={() => void submit()}
+                style={({ pressed }) => [
+                  styles.authPrimaryButton,
+                  loading && styles.authPrimaryButtonDisabled,
+                  pressed && styles.authPrimaryButtonPressed,
+                ]}
+              >
+                <Text style={styles.authPrimaryButtonText}>{submitLabel}</Text>
+                <View style={styles.authPrimaryButtonIcon}>
+                  <ArrowRight color={colors.primary} size={18} strokeWidth={2.6} />
+                </View>
+              </Pressable>
+
+              {isSignIn ? (
+                <View style={styles.authSessionNote}>
+                  <ShieldCheck color={colors.blue} size={18} />
+                  <Text style={styles.authSessionNoteText}>
+                    Phiên đăng nhập được ghi nhớ trên thiết bị này. Mật khẩu không được lưu dạng đọc được.
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.authSignupNote}>
+                  Tài khoản mới luôn có quyền Nhân viên. Quyền quản lí được cấp riêng sau đó.
+                </Text>
+              )}
+
+              <View style={styles.authSwitchRow}>
+                <Text style={styles.authSwitchPrompt}>
+                  {isSignIn ? 'Chưa có tài khoản?' : 'Đã có tài khoản?'}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => handleModeChange(isSignIn ? 'signUp' : 'signIn')}
+                  style={({ pressed }) => [styles.authSwitchButton, pressed && styles.pressed]}
+                >
+                  <Text style={styles.authSwitchButtonText}>{isSignIn ? 'Tạo tài khoản' : 'Quay lại đăng nhập'}</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            <Text style={styles.authFooter}>Cà phê Đạm • Chỉ dành cho nhân sự được cấp quyền</Text>
           </View>
-          <Text style={styles.authFooter}>Chỉ dành cho nhân sự được quán cấp quyền.</Text>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
-function AuthActionButton({ label, onPress }: { label: string; onPress: () => void }) {
+function AuthFormField({
+  autoComplete,
+  autoCapitalize,
+  autoCorrect,
+  icon: Icon,
+  inputRef,
+  keyboardType,
+  label,
+  nativeID,
+  onChangeText,
+  onSubmitEditing,
+  placeholder,
+  returnKeyType,
+  secureTextEntry,
+  textContentType,
+  trailingAction,
+  value,
+}: {
+  autoComplete?: TextInputProps['autoComplete'];
+  autoCapitalize?: TextInputProps['autoCapitalize'];
+  autoCorrect?: boolean;
+  icon: typeof Clock3;
+  inputRef?: Ref<TextInput>;
+  keyboardType?: KeyboardTypeOptions;
+  label: string;
+  nativeID: string;
+  onChangeText: (value: string) => void;
+  onSubmitEditing?: TextInputProps['onSubmitEditing'];
+  placeholder: string;
+  returnKeyType?: TextInputProps['returnKeyType'];
+  secureTextEntry?: boolean;
+  textContentType?: TextInputProps['textContentType'];
+  trailingAction?: {
+    icon: typeof Clock3;
+    label: string;
+    onPress: () => void;
+  };
+  value: string;
+}) {
+  const [focused, setFocused] = useState(false);
+  const TrailingIcon = trailingAction?.icon;
+
   return (
-    <Pressable
-      accessibilityRole="button"
-      onPress={onPress}
-      style={({ pressed }) => [styles.authActionButton, pressed && styles.pressed]}
-    >
-      <Text style={styles.authActionButtonText}>{label}</Text>
-      <ArrowRight color={colors.onDark} size={19} strokeWidth={2.5} />
-    </Pressable>
+    <View style={styles.authField}>
+      <Text style={[styles.authFieldLabel, focused && styles.authFieldLabelFocused]}>{label}</Text>
+      <View style={[styles.authFieldShell, focused && styles.authFieldShellFocused]}>
+        <View style={[styles.authFieldIcon, focused && styles.authFieldIconFocused]}>
+          <Icon color={focused ? colors.primary : colors.muted} size={19} />
+        </View>
+        <TextInput
+          accessibilityLabel={label}
+          autoCapitalize={autoCapitalize}
+          autoComplete={autoComplete}
+          autoCorrect={autoCorrect}
+          importantForAutofill="yes"
+          keyboardType={keyboardType}
+          nativeID={nativeID}
+          onBlur={() => setFocused(false)}
+          onChangeText={onChangeText}
+          onFocus={() => setFocused(true)}
+          onSubmitEditing={onSubmitEditing}
+          placeholder={placeholder}
+          placeholderTextColor="#9B897C"
+          ref={inputRef}
+          returnKeyType={returnKeyType}
+          secureTextEntry={secureTextEntry}
+          selectionColor={colors.primary}
+          style={styles.authFieldInput}
+          textContentType={textContentType}
+          value={value}
+        />
+        {TrailingIcon && trailingAction ? (
+          <Pressable
+            accessibilityLabel={trailingAction.label}
+            accessibilityRole="button"
+            hitSlop={4}
+            onPress={trailingAction.onPress}
+            style={({ pressed }) => [styles.authFieldTrailing, pressed && styles.pressed]}
+          >
+            <TrailingIcon color={colors.muted} size={20} />
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
   );
 }
 
@@ -4466,7 +4530,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   authSafeArea: {
-    backgroundColor: colors.canvasDeep,
+    backgroundColor: '#2D160F',
   },
   keyboardView: {
     flex: 1,
@@ -4598,106 +4662,366 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingBottom: 28,
   },
-  authPage: {
+  authScrollContent: {
     flexGrow: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 24,
+    backgroundColor: '#2D160F',
   },
-  authPageWide: {
+  authViewport: {
+    flexGrow: 1,
+    backgroundColor: '#2D160F',
+    width: '100%',
+  },
+  authViewportWide: {
     alignSelf: 'center',
-    paddingHorizontal: 0,
-    width: 500,
+    shadowColor: '#160A06',
+    shadowOffset: { width: 0, height: 18 },
+    shadowOpacity: 0.34,
+    shadowRadius: 36,
+    width: 480,
   },
-  authBrand: {
+  authHero: {
+    backgroundColor: '#4B281B',
+    minHeight: 312,
+    overflow: 'hidden',
+    paddingBottom: 64,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+  },
+  authHeroOrbLarge: {
+    backgroundColor: 'rgba(231, 182, 64, 0.12)',
+    borderColor: 'rgba(255, 248, 238, 0.09)',
+    borderRadius: 140,
+    borderWidth: 1,
+    height: 280,
+    position: 'absolute',
+    right: -116,
+    top: -118,
+    width: 280,
+  },
+  authHeroOrbSmall: {
+    backgroundColor: 'rgba(185, 120, 73, 0.22)',
+    borderRadius: 72,
+    bottom: 24,
+    height: 144,
+    position: 'absolute',
+    right: -50,
+    width: 144,
+  },
+  authBrandRow: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: 13,
-    marginBottom: 22,
+    gap: 12,
   },
-  authBrandMark: {
-    backgroundColor: colors.primary,
-    borderColor: 'rgba(255, 248, 238, 0.34)',
-    borderRadius: 8,
+  authHeroLogoFrame: {
+    backgroundColor: colors.surfaceStrong,
+    borderColor: 'rgba(255, 248, 238, 0.42)',
+    borderRadius: 17,
     borderWidth: 1,
-    height: 60,
+    height: 58,
     overflow: 'hidden',
     padding: 3,
-    width: 60,
+    shadowColor: '#180B07',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.24,
+    shadowRadius: 16,
+    width: 58,
   },
-  authBrandLogo: {
-    borderRadius: 5,
+  authHeroLogo: {
+    borderRadius: 14,
     height: '100%',
     resizeMode: 'cover',
     width: '100%',
   },
-  authBrandCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  authEyebrow: {
-    color: colors.primary,
-    fontSize: 11,
+  authHeroBrandName: {
+    color: colors.onDark,
+    fontSize: 15,
     fontWeight: '900',
-    letterSpacing: 0,
-    lineHeight: 15,
+    letterSpacing: 1.4,
+    lineHeight: 19,
   },
-  authBrandTitle: {
-    color: colors.ink,
-    fontSize: 30,
-    fontWeight: '900',
-    letterSpacing: 0,
-    lineHeight: 34,
-    marginTop: 2,
-  },
-  authPanel: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 8,
-    borderWidth: 1,
-    gap: 18,
-    padding: 18,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.1,
-    shadowRadius: 20,
-    elevation: 3,
-  },
-  authPanelHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 11,
-  },
-  authPanelIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderRadius: 8,
-    height: 42,
-    justifyContent: 'center',
-    width: 42,
-  },
-  authPanelTitle: {
-    color: colors.ink,
-    fontSize: 19,
-    fontWeight: '900',
-    letterSpacing: 0,
-    lineHeight: 23,
-  },
-  authPanelHint: {
-    color: colors.muted,
+  authHeroBrandMeta: {
+    color: 'rgba(255, 248, 238, 0.68)',
     fontSize: 12,
     fontWeight: '700',
-    letterSpacing: 0,
-    lineHeight: 17,
+    letterSpacing: 0.1,
     marginTop: 2,
   },
-  authFeedback: {
+  authHeroCopy: {
+    marginTop: 38,
+    maxWidth: 340,
+  },
+  authSystemPill: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(255, 248, 238, 0.1)',
+    borderColor: 'rgba(255, 248, 238, 0.14)',
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 7,
+    minHeight: 30,
+    paddingHorizontal: 11,
+  },
+  authSystemDot: {
+    backgroundColor: '#A9D18E',
+    borderRadius: 999,
+    height: 7,
+    shadowColor: '#A9D18E',
+    shadowOpacity: 0.7,
+    shadowRadius: 5,
+    width: 7,
+  },
+  authSystemText: {
+    color: colors.onDark,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  authHeroTitle: {
+    color: colors.onDark,
+    fontSize: 34,
+    fontWeight: '900',
+    letterSpacing: -0.8,
+    lineHeight: 39,
+    marginTop: 14,
+  },
+  authHeroSubtitle: {
+    color: 'rgba(255, 248, 238, 0.72)',
+    fontSize: 14,
+    fontWeight: '600',
+    letterSpacing: 0,
+    lineHeight: 21,
+    marginTop: 10,
+    maxWidth: 330,
+  },
+  authSheet: {
+    backgroundColor: colors.surfaceStrong,
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    gap: 18,
+    marginTop: -32,
+    minHeight: 500,
+    paddingBottom: 22,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+  },
+  authSheetHandle: {
+    alignSelf: 'center',
+    backgroundColor: colors.lineStrong,
+    borderRadius: 999,
+    height: 4,
+    marginBottom: 2,
+    width: 42,
+  },
+  authSheetHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 12,
+  },
+  authSheetEyebrow: {
+    color: colors.accent,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1.1,
+  },
+  authSheetTitle: {
+    color: colors.ink,
+    fontSize: 25,
+    fontWeight: '900',
+    letterSpacing: -0.4,
+    lineHeight: 30,
+    marginTop: 2,
+  },
+  authSheetHint: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  authSheetIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: 15,
+    height: 48,
+    justifyContent: 'center',
+    width: 48,
+  },
+  authFields: {
+    gap: 15,
+  },
+  authField: {
+    gap: 7,
+  },
+  authFieldLabel: {
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 0,
+  },
+  authFieldLabelFocused: {
+    color: colors.primary,
+  },
+  authFieldShell: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: colors.lineStrong,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    flexDirection: 'row',
+    minHeight: 58,
+    paddingHorizontal: 9,
+  },
+  authFieldShellFocused: {
+    backgroundColor: '#FFFEFB',
+    borderColor: colors.primary,
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.1,
+    shadowRadius: 9,
+  },
+  authFieldIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceSoft,
+    borderRadius: 12,
+    height: 38,
+    justifyContent: 'center',
+    width: 38,
+  },
+  authFieldIconFocused: {
+    backgroundColor: colors.primarySoft,
+  },
+  authFieldInput: {
+    color: colors.ink,
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: 0,
+    minHeight: 54,
+    paddingHorizontal: 10,
+    paddingVertical: 0,
+  },
+  authFieldTrailing: {
+    alignItems: 'center',
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  authBranchSection: {
+    backgroundColor: colors.surface,
+    borderColor: colors.line,
+    borderRadius: 18,
+    borderWidth: 1,
+    gap: 8,
+    padding: 14,
+  },
+  authSectionHeading: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  authSectionTitle: {
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  authSectionHint: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 17,
+    marginBottom: 3,
+  },
+  authPrimaryButton: {
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    borderRadius: 18,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 58,
+    paddingLeft: 20,
+    paddingRight: 10,
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.22,
+    shadowRadius: 18,
+    elevation: 4,
+  },
+  authPrimaryButtonPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.99 }],
+  },
+  authPrimaryButtonDisabled: {
+    opacity: 0.58,
+  },
+  authPrimaryButtonText: {
+    color: colors.onDark,
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: 0.1,
+  },
+  authPrimaryButtonIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.gold,
+    borderRadius: 13,
+    height: 38,
+    justifyContent: 'center',
+    width: 38,
+  },
+  authSessionNote: {
     alignItems: 'flex-start',
-    borderRadius: 8,
+    backgroundColor: colors.blueSoft,
+    borderColor: 'rgba(97, 112, 85, 0.18)',
+    borderRadius: 14,
     borderWidth: 1,
     flexDirection: 'row',
     gap: 9,
     padding: 11,
+  },
+  authSessionNoteText: {
+    color: '#485641',
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 16,
+  },
+  authSignupNote: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 18,
+    textAlign: 'center',
+  },
+  authSwitchRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    minHeight: 44,
+  },
+  authSwitchPrompt: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  authSwitchButton: {
+    justifyContent: 'center',
+    minHeight: 44,
+    paddingHorizontal: 7,
+  },
+  authSwitchButtonText: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '900',
+    textDecorationLine: 'underline',
+  },
+  authFeedback: {
+    alignItems: 'flex-start',
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 9,
+    padding: 12,
   },
   authFeedbackSuccess: {
     backgroundColor: colors.blueSoft,
@@ -4734,12 +5058,14 @@ const styles = StyleSheet.create({
     width: 26,
   },
   authFooter: {
-    color: colors.muted,
-    fontSize: 12,
+    color: 'rgba(255, 248, 238, 0.58)',
+    fontSize: 11,
     fontWeight: '700',
-    letterSpacing: 0,
-    lineHeight: 17,
-    marginTop: 14,
+    letterSpacing: 0.2,
+    lineHeight: 16,
+    paddingBottom: 24,
+    paddingHorizontal: 16,
+    paddingTop: 17,
     textAlign: 'center',
   },
   authCard: {
@@ -4788,50 +5114,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 9,
     textAlign: 'center',
-  },
-  authModeRow: {
-    backgroundColor: colors.surfaceSoft,
-    borderColor: colors.line,
-    borderRadius: 8,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 4,
-    padding: 4,
-  },
-  authModeButton: {
-    alignItems: 'center',
-    borderRadius: 6,
-    flex: 1,
-    minHeight: 40,
-    justifyContent: 'center',
-  },
-  authModeButtonActive: {
-    backgroundColor: colors.primary,
-  },
-  authModeText: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  authModeTextActive: {
-    color: colors.onDark,
-  },
-  authActionButton: {
-    alignItems: 'center',
-    backgroundColor: colors.primary,
-    borderRadius: 8,
-    flexDirection: 'row',
-    gap: 8,
-    justifyContent: 'center',
-    minHeight: 50,
-    paddingHorizontal: 14,
-  },
-  authActionButtonText: {
-    color: colors.onDark,
-    fontSize: 15,
-    fontWeight: '900',
-    letterSpacing: 0,
   },
   accountRow: {
     alignItems: 'center',
