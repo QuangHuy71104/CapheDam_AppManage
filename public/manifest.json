@@ -1,7 +1,7 @@
 {
-  "name": "Ca phe Dam - Quan ly ca",
-  "short_name": "Ca phe Dam",
-  "description": "Ung dung web noi bo de cham cong, bao ca va theo doi van hanh quan ca phe.",
+  "name": "Cà phê Đạm — Quản lý ca",
+  "short_name": "Cà phê Đạm",
+  "description": "Ứng dụng nội bộ để chấm công, báo ca và theo dõi vận hành quán cà phê.",
   "id": "/",
   "start_url": "/",
   "scope": "/",
@@ -14,13 +14,13 @@
       "src": "/pwa-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
       "src": "/pwa-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ]
 }

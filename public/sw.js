@@ -1,4 +1,4 @@
-const CACHE_NAME = 'caphe-dam-web-v1';
+const CACHE_NAME = 'caphe-dam-web-v2';
 const APP_SHELL = ['/', '/manifest.json', '/pwa-192.png', '/pwa-512.png'];
 
 self.addEventListener('install', (event) => {

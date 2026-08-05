@@ -1,15 +1,11 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as FileSystem from 'expo-file-system';
-import { StatusBar } from 'expo-status-bar';
-import * as Sharing from 'expo-sharing';
 import {
   Alert,
   Image,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
@@ -17,7 +13,7 @@ import {
   type TextInputProps,
   useWindowDimensions,
   View,
-} from 'react-native';
+} from './lib/web-ui';
 import {
   ArrowRight,
   Beef,
@@ -49,11 +45,11 @@ import {
   WalletCards,
   X,
   XCircle,
-} from 'lucide-react-native';
-import { captureRef } from 'react-native-view-shot';
+} from 'lucide-react';
 import { type Ref, useEffect, useRef, useState } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
+import { webStorage } from './lib/storage';
 
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients';
 type UserRole = 'owner' | 'manager' | 'employee';
@@ -226,7 +222,7 @@ type PendingSignupDraft = {
 };
 
 const STORAGE_KEY = 'caphedam-appmanage-v1';
-const logoImage = require('./assets/logo.jpg');
+const logoImage = new URL('./assets/logo.jpg', import.meta.url).href;
 
 const initialData: AppData = {
   attendance: [],
@@ -1310,14 +1306,6 @@ const buildClosingReportSvg = (report: ShiftCloseReport) => {
 </svg>`;
 };
 
-const ensureFileUri = (uri: string) => {
-  if (uri.startsWith('file://') || uri.startsWith('content://')) {
-    return uri;
-  }
-
-  return uri.startsWith('/') ? `file://${uri}` : `file:///${uri}`;
-};
-
 const waitForNextFrame = () =>
   new Promise<void>((resolve) => {
     requestAnimationFrame(() => {
@@ -1327,52 +1315,34 @@ const waitForNextFrame = () =>
     });
   });
 
-const exportClosingReportImage = async (report: ShiftCloseReport, exportViewRef: { current: unknown }) => {
+const downloadFile = (url: string, fileName: string) => {
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+};
+
+const exportClosingReportImage = async (
+  report: ShiftCloseReport,
+  exportViewRef: { current: HTMLElement | null },
+) => {
   await waitForNextFrame();
 
   try {
     const fileName = `bao-ca-${report.id}.png`;
-
-    if (Platform.OS === 'web') {
-      const dataUri = await captureRef(exportViewRef, {
-        format: 'png',
-        quality: 1,
-        result: 'data-uri',
-      });
-
-      const link = document.createElement('a');
-      link.href = dataUri;
-      link.download = fileName;
-      link.click();
-      return;
+    if (!exportViewRef.current) {
+      throw new Error('Không tìm thấy nội dung báo ca để xuất ảnh.');
     }
 
-    const captureUri = await captureRef(exportViewRef, {
-      format: 'png',
-      quality: 1,
-      result: 'tmpfile',
+    const { toPng } = await import('html-to-image');
+    const dataUri = await toPng(exportViewRef.current, {
+      backgroundColor: '#F5EDE1',
+      cacheBust: true,
+      pixelRatio: 2,
     });
-
-    const shareUri = ensureFileUri(captureUri);
-
-    if (await Sharing.isAvailableAsync()) {
-      await Sharing.shareAsync(shareUri, {
-        dialogTitle: 'Xuất ảnh báo ca',
-        mimeType: 'image/png',
-        UTI: 'public.png',
-      });
-      return;
-    }
-
-    const exportDirectory = new FileSystem.Directory(FileSystem.Paths.document, 'shift-close-reports');
-    exportDirectory.create({ intermediates: true, idempotent: true });
-
-    const exportFile = new FileSystem.File(exportDirectory, fileName);
-    exportFile.create({ overwrite: true });
-    const captureFile = new FileSystem.File(shareUri);
-    captureFile.copy(exportFile);
-
-    Alert.alert('Đã xuất ảnh báo ca', 'Ảnh PNG đã được lưu trong thư mục của ứng dụng.');
+    downloadFile(dataUri, fileName);
   } catch {
     await exportClosingReportSvg(report);
   }
@@ -1382,54 +1352,15 @@ const exportClosingReportSvg = async (report: ShiftCloseReport) => {
   const svg = buildClosingReportSvg(report);
   const fileName = `bao-ca-${report.id}.svg`;
 
-  if (Platform.OS === 'web') {
-    const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
-    const fileUrl = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-
-    link.href = fileUrl;
-    link.download = fileName;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(fileUrl), 1000);
-    return;
-  }
-
-  const exportDirectory = new FileSystem.Directory(FileSystem.Paths.document, 'shift-close-reports');
-  exportDirectory.create({ intermediates: true, idempotent: true });
-
-  const exportFile = new FileSystem.File(exportDirectory, fileName);
-  exportFile.create({ overwrite: true });
-  exportFile.write(svg);
-
-  if (await Sharing.isAvailableAsync()) {
-    await Sharing.shareAsync(ensureFileUri(exportFile.uri), {
-      dialogTitle: 'Xuất ảnh báo ca',
-      mimeType: 'image/svg+xml',
-      UTI: 'public.svg-image',
-    });
-    return;
-  }
-
-  Alert.alert('Đã xuất ảnh báo ca', 'Ảnh SVG đã được lưu trong thư mục của ứng dụng.');
+  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+  const fileUrl = URL.createObjectURL(blob);
+  downloadFile(fileUrl, fileName);
+  setTimeout(() => URL.revokeObjectURL(fileUrl), 1000);
 };
 
-const numericKeyboard = Platform.select({
-  ios: 'number-pad',
-  android: 'number-pad',
-  default: 'number-pad',
-}) as KeyboardTypeOptions;
-
-const decimalKeyboard = Platform.select({
-  ios: 'decimal-pad',
-  android: 'decimal-pad',
-  default: 'decimal-pad',
-}) as KeyboardTypeOptions;
-
-const transferKeyboard = Platform.select({
-  ios: 'numbers-and-punctuation',
-  android: 'default',
-  default: 'default',
-}) as KeyboardTypeOptions;
+const numericKeyboard: KeyboardTypeOptions = 'number-pad';
+const decimalKeyboard: KeyboardTypeOptions = 'decimal-pad';
+const transferKeyboard: KeyboardTypeOptions = 'default';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('attendance');
@@ -1445,7 +1376,7 @@ export default function App() {
   const [selectedBranchId, setSelectedBranchId] = useState(defaultBranchId);
   const [selectedMonthKey, setSelectedMonthKey] = useState(getMonthKey());
   const contentScrollRef = useRef<ScrollView>(null);
-  const exportCaptureRef = useRef<any>(null);
+  const exportCaptureRef = useRef<HTMLDivElement>(null);
   const remoteSnapshotRef = useRef('');
   const pendingSignupRef = useRef<PendingSignupDraft | null>(null);
 
@@ -1518,7 +1449,7 @@ export default function App() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const rawData = await AsyncStorage.getItem(STORAGE_KEY);
+        const rawData = await webStorage.getItem(STORAGE_KEY);
         if (rawData) {
           setData(normalizeAppData(JSON.parse(rawData) as Partial<AppData>));
         }
@@ -1635,7 +1566,7 @@ export default function App() {
       return;
     }
 
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch(() => {
+    webStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch(() => {
       Alert.alert('Không lưu được dữ liệu', 'Vui lòng kiểm tra dung lượng thiết bị.');
     });
   }, [data, loaded]);
@@ -2066,7 +1997,6 @@ export default function App() {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar backgroundColor={colors.background} style="dark" />
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.keyboardView}
       >
         <View style={styles.shell}>
@@ -2301,7 +2231,7 @@ function SupabaseSetupScreen() {
           <Image source={logoImage} style={styles.authLogo} />
           <Text style={styles.authTitle}>Cần cấu hình Supabase</Text>
           <Text style={styles.authHint}>
-            Tạo file .env từ .env.example rồi điền các biến EXPO_PUBLIC_SUPABASE_* từ Supabase project settings.
+            Tạo file .env từ .env.example rồi điền các biến VITE_SUPABASE_* từ Supabase project settings.
           </Text>
           <Text style={styles.codeText}>database/supabase-schema.sql</Text>
           <Text style={styles.authHint}>
@@ -2482,7 +2412,7 @@ function AuthScreen({
   return (
     <SafeAreaView style={[styles.safeArea, styles.authSafeArea]}>
       <StatusBar backgroundColor={colors.primary} style="light" />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.keyboardView}>
+      <KeyboardAvoidingView style={styles.keyboardView}>
         <ScrollView
           contentContainerStyle={styles.authScrollContent}
           keyboardShouldPersistTaps="handled"
