@@ -1167,23 +1167,122 @@ const loadAppDataFromSupabase = async (profile: UserProfile): Promise<AppData> =
   });
 };
 
+const syncTableLabels: Record<string, string> = {
+  attendance_sheets: 'bảng chấm công',
+  branch_payroll_confirmations: 'xác nhận bảng lương',
+  ingredient_reports: 'báo đồ',
+  shift_close_reports: 'báo ca',
+};
+
+const formatSupabaseError = (error: unknown) => {
+  if (!error || typeof error !== 'object') {
+    return error instanceof Error ? error.message : 'Lỗi không xác định';
+  }
+  const value = error as { code?: string; details?: string; hint?: string; message?: string };
+  return [value.message, value.details, value.hint, value.code ? `Mã ${value.code}` : ''].filter(Boolean).join(' • ');
+};
+
 const upsertSupabaseRows = async (tableName: string, rows: Record<string, unknown>[]) => {
   if (rows.length === 0) {
     return;
   }
 
-  const { error } = await supabase.from(tableName).upsert(rows, { onConflict: 'id' });
+  const chunkSize = 50;
+  for (let offset = 0; offset < rows.length; offset += chunkSize) {
+    const chunk = rows.slice(offset, offset + chunkSize);
+    const { error } = await supabase.from(tableName).upsert(chunk, { onConflict: 'id' });
 
-  if (error) {
-    throw error;
+    if (!error) {
+      continue;
+    }
+
+    // A single legacy/invalid record must not prevent every valid row in the
+    // same table from syncing. Retry rows individually to isolate the cause.
+    const failedRows: string[] = [];
+    let firstError: unknown = error;
+    for (const row of chunk) {
+      const { error: rowError } = await supabase.from(tableName).upsert(row, { onConflict: 'id' });
+      if (rowError) {
+        firstError = rowError;
+        failedRows.push(typeof row.id === 'string' ? row.id : 'không có mã');
+      }
+    }
+
+    if (failedRows.length > 0) {
+      throw new Error(
+        `${syncTableLabels[tableName] ?? tableName}: ${formatSupabaseError(firstError)} ` +
+          `(bản ghi: ${failedRows.slice(0, 3).join(', ')}${failedRows.length > 3 ? ', ...' : ''})`,
+      );
+    }
   }
 };
 
-const syncAppDataToSupabase = async (current: AppData) => {
+const deduplicateAttendanceSheets = (sheets: AttendanceSheet[]) => {
+  const uniqueSheets = new Map<string, AttendanceSheet>();
+
+  sheets.forEach((sheet) => {
+    const employeeName = sheet.employeeName.trim();
+    if (!employeeName || !/^\d{4}-\d{2}$/.test(sheet.monthKey)) {
+      return;
+    }
+    const key = `${sheet.branchId}|${sheet.monthKey}|${employeeName.toLocaleLowerCase('vi-VN')}`;
+    const existing = uniqueSheets.get(key);
+    if (!existing) {
+      uniqueSheets.set(key, { ...sheet, employeeName });
+      return;
+    }
+
+    const preferred = sheet.userId && !existing.userId ? sheet : existing;
+    const secondary = preferred === sheet ? existing : sheet;
+    uniqueSheets.set(key, {
+      ...preferred,
+      days: { ...secondary.days, ...preferred.days },
+      employeeConfirmedAt: preferred.employeeConfirmedAt ?? secondary.employeeConfirmedAt,
+      userId: preferred.userId ?? secondary.userId,
+    });
+  });
+
+  return [...uniqueSheets.values()];
+};
+
+const deduplicateBranchPayrolls = (confirmations: BranchPayrollConfirmation[]) => {
+  const uniqueConfirmations = new Map<string, BranchPayrollConfirmation>();
+  confirmations.forEach((confirmation) => {
+    if (!/^\d{4}-\d{2}$/.test(confirmation.monthKey)) {
+      return;
+    }
+    const key = `${confirmation.branchId}|${confirmation.monthKey}`;
+    const existing = uniqueConfirmations.get(key);
+    if (!existing || (!existing.managerConfirmedAt && confirmation.managerConfirmedAt)) {
+      uniqueConfirmations.set(key, confirmation);
+    }
+  });
+  return [...uniqueConfirmations.values()];
+};
+
+const syncAppDataToSupabase = async (current: AppData, profile: UserProfile) => {
   const updatedAt = new Date().toISOString();
-  const attendanceRows = current.attendanceSheets.map((sheet) => ({
+  const scopedAttendance = deduplicateAttendanceSheets(current.attendanceSheets).filter((sheet) =>
+    profile.role === 'owner'
+      ? true
+      : profile.role === 'manager'
+        ? sheet.branchId === profile.branchId
+        : sheet.userId === profile.id ||
+          (sheet.branchId === profile.branchId && sheet.employeeName.trim().toLowerCase() === profile.fullName.trim().toLowerCase()),
+  );
+  const scopedPayrolls = deduplicateBranchPayrolls(current.branchPayrolls).filter((confirmation) =>
+    profile.role === 'owner' ? true : profile.role === 'manager' && confirmation.branchId === profile.branchId,
+  );
+  const scopedIngredients = current.ingredients.filter((report) =>
+    profile.role === 'owner' ? true : getReportBranchId(report) === profile.branchId,
+  );
+  const scopedClosings = current.closings.filter((report) =>
+    profile.role === 'owner' ? true : getReportBranchId(report) === profile.branchId,
+  );
+
+  const attendanceRows = scopedAttendance.map((sheet) => ({
     id: sheet.id,
-    user_id: sheet.userId ?? null,
+    user_id: sheet.userId ?? (profile.role === 'employee' ? profile.id : null),
     branch_id: sheet.branchId,
     employee_name: sheet.employeeName,
     month_key: sheet.monthKey,
@@ -1191,7 +1290,7 @@ const syncAppDataToSupabase = async (current: AppData) => {
     employee_confirmed_at: sheet.employeeConfirmedAt ?? null,
     updated_at: updatedAt,
   }));
-  const payrollRows = current.branchPayrolls.map((confirmation) => ({
+  const payrollRows = scopedPayrolls.map((confirmation) => ({
     id: confirmation.id,
     branch_id: confirmation.branchId,
     month_key: confirmation.monthKey,
@@ -1201,7 +1300,7 @@ const syncAppDataToSupabase = async (current: AppData) => {
     auto_confirmed: Boolean(confirmation.autoConfirmed),
     updated_at: updatedAt,
   }));
-  const ingredientRows = current.ingredients.map((report) => ({
+  const ingredientRows = scopedIngredients.map((report) => ({
     id: report.id,
     branch_id: getReportBranchId(report),
     reporter_name: report.reporterName ?? null,
@@ -1211,7 +1310,7 @@ const syncAppDataToSupabase = async (current: AppData) => {
     items: report.items ?? [],
     updated_at: updatedAt,
   }));
-  const closingRows = current.closings.map((report) => ({
+  const closingRows = scopedClosings.map((report) => ({
     id: report.id,
     branch_id: getReportBranchId(report),
     reported_at: report.timestamp,
@@ -1219,12 +1318,20 @@ const syncAppDataToSupabase = async (current: AppData) => {
     updated_at: updatedAt,
   }));
 
-  await Promise.all([
+  const results = await Promise.allSettled([
     upsertSupabaseRows('attendance_sheets', attendanceRows),
     upsertSupabaseRows('branch_payroll_confirmations', payrollRows),
     upsertSupabaseRows('ingredient_reports', ingredientRows),
     upsertSupabaseRows('shift_close_reports', closingRows),
   ]);
+
+  const errors = results
+    .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+    .map((result) => (result.reason instanceof Error ? result.reason.message : formatSupabaseError(result.reason)));
+
+  if (errors.length > 0) {
+    throw new Error(errors.join('\n'));
+  }
 };
 
 const clearRemoteAppData = async () => {
@@ -1604,6 +1711,8 @@ export default function App() {
   const [authFeedback, setAuthFeedback] = useState<AuthFeedback | null>(null);
   const [remoteReady, setRemoteReady] = useState(false);
   const [syncingRemote, setSyncingRemote] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncRetryToken, setSyncRetryToken] = useState(0);
   const [currentRole, setCurrentRole] = useState<UserRole>('employee');
   const [selectedBranchId, setSelectedBranchId] = useState(defaultBranchId);
   const [selectedMonthKey, setSelectedMonthKey] = useState(getMonthKey());
@@ -1811,24 +1920,65 @@ export default function App() {
     const snapshot = JSON.stringify(data);
 
     if (snapshot === remoteSnapshotRef.current) {
+      setSyncError(null);
       return;
     }
 
-    const timeout = setTimeout(() => {
-      setSyncingRemote(true);
-      syncAppDataToSupabase(data)
-        .then(() => {
-          remoteSnapshotRef.current = snapshot;
-        })
-        .catch((error) => {
-          const message = error instanceof Error ? error.message : 'Không đồng bộ được dữ liệu lên Supabase.';
-          Alert.alert('Lỗi đồng bộ', message);
-        })
-        .finally(() => setSyncingRemote(false));
-    }, 700);
+    let cancelled = false;
+    let retryTimeout: ReturnType<typeof setTimeout> | undefined;
 
-    return () => clearTimeout(timeout);
-  }, [data, profile, remoteReady]);
+    const runSync = async (attempt = 0) => {
+      retryTimeout = undefined;
+      if (!navigator.onLine) {
+        if (!cancelled) {
+          setSyncingRemote(false);
+          setSyncError('Thiết bị đang mất mạng. Dữ liệu vẫn được giữ trên máy và sẽ tự đồng bộ khi có kết nối.');
+        }
+        return;
+      }
+
+      setSyncingRemote(true);
+      try {
+        await syncAppDataToSupabase(data, profile);
+        if (!cancelled) {
+          remoteSnapshotRef.current = snapshot;
+          setSyncError(null);
+        }
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        if (attempt < 2) {
+          retryTimeout = setTimeout(() => void runSync(attempt + 1), 1400 * (attempt + 1));
+        } else {
+          const message = error instanceof Error ? error.message : 'Không đồng bộ được dữ liệu lên Supabase.';
+          setSyncError(message);
+        }
+      } finally {
+        if (!cancelled && !retryTimeout) {
+          setSyncingRemote(false);
+        }
+      }
+    };
+
+    const timeout = setTimeout(() => void runSync(), 700);
+    const retryWhenOnline = () => {
+      if (retryTimeout) {
+        clearTimeout(retryTimeout);
+      }
+      void runSync();
+    };
+    window.addEventListener('online', retryWhenOnline);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+      if (retryTimeout) {
+        clearTimeout(retryTimeout);
+      }
+      window.removeEventListener('online', retryWhenOnline);
+    };
+  }, [data, profile, remoteReady, syncRetryToken]);
 
   useEffect(() => {
     const availableTabs = getTabItemsForRole(currentRole);
@@ -1839,12 +1989,12 @@ export default function App() {
   }, [activeTab, currentRole]);
 
   useEffect(() => {
-    if (!loaded) {
+    if (!loaded || currentRole === 'employee') {
       return;
     }
 
     setData((current) => autoConfirmEligiblePayrolls(current));
-  }, [data.attendanceSheets, loaded]);
+  }, [currentRole, data.attendanceSheets, loaded]);
 
   const tabItems = getTabItemsForRole(currentRole);
   const activeBranch = getBranchById(selectedBranchId);
@@ -2292,6 +2442,7 @@ export default function App() {
               <AccountAvatarButton
                 onPress={() => setAccountOpen(true)}
                 profile={profile}
+                syncError={syncError}
                 syncing={syncingRemote}
               />
             </View>
@@ -2495,8 +2646,10 @@ export default function App() {
                   setSelectedBranchId(nextProfile.branchId);
                 }
               }}
+              onRetrySync={() => setSyncRetryToken((value) => value + 1)}
               onSignOut={signOut}
               profile={profile}
+              syncError={syncError}
               syncing={syncingRemote}
             />
           ) : null}
@@ -3143,10 +3296,12 @@ function ProfileAvatar({
 function AccountAvatarButton({
   onPress,
   profile,
+  syncError,
   syncing,
 }: {
   onPress: () => void;
   profile: UserProfile;
+  syncError: string | null;
   syncing: boolean;
 }) {
   return (
@@ -3157,7 +3312,13 @@ function AccountAvatarButton({
       style={({ pressed }) => [styles.accountAvatarButton, pressed && styles.pressed]}
     >
       <ProfileAvatar avatarUrl={profile.avatarUrl} label={profile.fullName || profile.email} />
-      <View style={[styles.accountPresenceDot, syncing && styles.accountPresenceDotSyncing]} />
+      <View
+        style={[
+          styles.accountPresenceDot,
+          syncing && styles.accountPresenceDotSyncing,
+          syncError && styles.accountPresenceDotError,
+        ]}
+      />
     </Pressable>
   );
 }
@@ -3189,16 +3350,20 @@ function AccountPanel({
   branchId,
   onClose,
   onProfileChange,
+  onRetrySync,
   onSignOut,
   profile,
+  syncError,
   syncing,
 }: {
   authEmail: string;
   branchId: string;
   onClose: () => void;
   onProfileChange: (profile: UserProfile) => void;
+  onRetrySync: () => void;
   onSignOut: () => void;
   profile: UserProfile;
+  syncError: string | null;
   syncing: boolean;
 }) {
   const [fullName, setFullName] = useState(profile.fullName);
@@ -3391,8 +3556,28 @@ function AccountPanel({
               <ShieldCheck color={colors.primary} size={14} />
               <Text style={styles.accountRolePillText}>{roleLabel}</Text>
             </View>
-            <Text style={styles.accountSync}>{syncing ? 'Đang đồng bộ...' : 'Đã đồng bộ Supabase'}</Text>
+            <Text style={[styles.accountHeroSync, syncError && styles.accountHeroSyncError]}>
+              {syncing ? 'Đang đồng bộ...' : syncError ? 'Đồng bộ cần kiểm tra' : 'Đã đồng bộ Supabase'}
+            </Text>
           </View>
+
+          {syncError ? (
+            <View style={styles.syncErrorCard}>
+              <CircleAlert color={colors.rose} size={20} />
+              <View style={styles.flex}>
+                <Text style={styles.syncErrorTitle}>Dữ liệu chưa đồng bộ hoàn toàn</Text>
+                <Text style={styles.syncErrorText}>{syncError}</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={onRetrySync}
+                  style={({ pressed }) => [styles.syncRetryButton, pressed && styles.pressed]}
+                >
+                  <RefreshCcw color={colors.onDark} size={15} />
+                  <Text style={styles.syncRetryText}>Thử đồng bộ lại</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
 
           {feedback ? <AuthFeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} /> : null}
 
@@ -5738,6 +5923,9 @@ const styles = StyleSheet.create({
   accountPresenceDotSyncing: {
     backgroundColor: colors.gold,
   },
+  accountPresenceDotError: {
+    backgroundColor: colors.rose,
+  },
   pressed: {
     opacity: 0.72,
   },
@@ -6402,6 +6590,15 @@ const styles = StyleSheet.create({
     marginTop: 3,
     textAlign: 'center',
   },
+  accountHeroSync: {
+    color: 'rgba(255, 248, 238, 0.72)',
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 7,
+  },
+  accountHeroSyncError: {
+    color: '#FFD2CA',
+  },
   accountRolePill: {
     alignItems: 'center',
     backgroundColor: colors.primarySoft,
@@ -6424,6 +6621,45 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     gap: 13,
     padding: 13,
+  },
+  syncErrorCard: {
+    alignItems: 'flex-start',
+    backgroundColor: colors.roseSoft,
+    borderColor: 'rgba(180, 72, 60, 0.3)',
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 9,
+    padding: 12,
+  },
+  syncErrorTitle: {
+    color: colors.ink,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  syncErrorText: {
+    color: colors.rose,
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 16,
+    marginTop: 3,
+  },
+  syncRetryButton: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: colors.rose,
+    borderRadius: 999,
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
+    marginTop: 8,
+    minHeight: 40,
+    paddingHorizontal: 13,
+  },
+  syncRetryText: {
+    color: colors.onDark,
+    fontSize: 12,
+    fontWeight: '900',
   },
   accountSectionHeading: {
     alignItems: 'flex-start',
