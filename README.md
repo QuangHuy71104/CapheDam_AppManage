@@ -8,6 +8,8 @@ Web app/PWA nội bộ, xây bằng React DOM + Vite và tối ưu cho nhân vi�
 - Đăng nhập, tạo tài khoản nhân viên và quản lý phiên bằng Supabase Auth.
 - Form đăng nhập mobile-first, vùng chạm lớn, hỗ trợ autofill và trình quản lý mật khẩu của trình duyệt.
 - Đổi mật khẩu sau khi xác thực lại mật khẩu hiện tại. Mật khẩu không được lưu dạng đọc được trong localStorage hay cơ sở dữ liệu ứng dụng.
+- Hồ sơ tài khoản với avatar, số điện thoại, vị trí, chi nhánh, hình thức làm việc và thâm niên.
+- Nhân viên tự sửa tên, số điện thoại, ảnh đại diện; Chủ cửa hàng quản lý vai trò, chi nhánh, Full/Part time và ngày bắt đầu của nhân sự.
 - Chấm công, tính lương, xác nhận bảng lương theo cấp nhân viên → quản lý → chủ cửa hàng.
 - Báo đồ, báo ca, tổng hợp theo chi nhánh và xuất báo cáo thành ảnh.
 - Dữ liệu vận hành đồng bộ với Supabase Postgres; phiên đăng nhập được duy trì bằng localStorage.
@@ -30,6 +32,8 @@ VITE_SUPABASE_ANON_KEY=your-anon-or-publishable-key
 ```
 
 Tài khoản tạo trong web mặc định là `employee`. Sau khi tạo tài khoản, dùng các câu lệnh mẫu cuối file SQL để cấp quyền `manager` hoặc `owner`. Khi đã tạo đủ tài khoản nhân sự, nên tắt public signup trong Supabase.
+
+Khi cập nhật từ phiên bản cũ, chạy lại toàn bộ `database/supabase-schema.sql`. Script có thể chạy lặp lại và sẽ bổ sung các cột hồ sơ, hàm cập nhật an toàn cùng bucket `avatars` mà không xóa dữ liệu vận hành hiện có.
 
 ## Chạy local
 

@@ -20,6 +20,7 @@ import {
   Building2,
   CalendarCheck2,
   CalendarDays,
+  Camera,
   CircleAlert,
   CheckCircle2,
   CheckCheck,
@@ -36,6 +37,7 @@ import {
   KeyRound,
   Mail,
   PackageCheck,
+  Phone,
   RefreshCcw,
   Save,
   ShieldCheck,
@@ -55,6 +57,7 @@ import { webStorage } from './lib/storage';
 
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients';
 type UserRole = 'owner' | 'manager' | 'employee';
+type EmploymentType = 'full_time' | 'part_time';
 type AuthFeedback = {
   tone: 'success' | 'error' | 'info';
   title: string;
@@ -218,6 +221,10 @@ type UserProfile = {
   fullName: string;
   role: UserRole;
   branchId: string | null;
+  phone: string;
+  avatarUrl: string;
+  employmentType: EmploymentType;
+  startDate: string;
 };
 
 type PendingSignupDraft = {
@@ -543,6 +550,34 @@ const formatDateTime = (value: string) =>
     timeStyle: 'short',
   }).format(new Date(value));
 
+const formatProfileDate = (value: string) =>
+  new Intl.DateTimeFormat('vi-VN', { dateStyle: 'medium' }).format(new Date(`${value}T00:00:00`));
+
+const formatSeniority = (startDate: string) => {
+  const start = new Date(`${startDate}T00:00:00`);
+  const today = new Date();
+
+  if (Number.isNaN(start.getTime()) || start > today) {
+    return 'Chưa xác định';
+  }
+
+  let months = (today.getFullYear() - start.getFullYear()) * 12 + today.getMonth() - start.getMonth();
+  if (today.getDate() < start.getDate()) {
+    months -= 1;
+  }
+  months = Math.max(0, months);
+
+  if (months === 0) {
+    return 'Dưới 1 tháng';
+  }
+
+  const years = Math.floor(months / 12);
+  const remainingMonths = months % 12;
+  return [years > 0 ? `${years} năm` : '', remainingMonths > 0 ? `${remainingMonths} tháng` : '']
+    .filter(Boolean)
+    .join(' ');
+};
+
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat('vi-VN', {
     style: 'currency',
@@ -744,6 +779,15 @@ const isValidEmailAddress = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test
 
 const minimumPasswordLength = 6;
 
+const normalizeEmploymentType = (value: unknown, role: UserRole): EmploymentType =>
+  value === 'full_time' || value === 'part_time' ? value : role === 'owner' ? 'full_time' : 'part_time';
+
+const normalizeProfileDate = (value: unknown, fallback?: unknown) => {
+  const candidate = typeof value === 'string' && value ? value : typeof fallback === 'string' ? fallback : '';
+  const match = candidate.match(/^\d{4}-\d{2}-\d{2}/);
+  return match?.[0] ?? new Date().toISOString().slice(0, 10);
+};
+
 const normalizeAttendanceDays = (value: unknown): Record<string, AttendanceDayEntry> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -767,18 +811,30 @@ const mapProfileRow = (row: Record<string, unknown>, user: User): UserProfile =>
   const normalizedEmail = typeof row.email === 'string' && row.email ? normalizeEmailAddress(row.email) : '';
 
   return {
-    id: user.id,
+    id: typeof row.id === 'string' && row.id ? row.id : user.id,
     email: normalizedEmail || normalizeEmailAddress(user.email ?? ''),
     fullName: typeof row.full_name === 'string' ? row.full_name : '',
     role,
     branchId,
+    phone: typeof row.phone === 'string' ? row.phone : '',
+    avatarUrl: typeof row.avatar_url === 'string' ? row.avatar_url : '',
+    employmentType: normalizeEmploymentType(row.employment_type, role),
+    startDate: normalizeProfileDate(row.start_date, row.created_at),
   };
+};
+
+const mapManagedProfileRow = (row: Record<string, unknown>): UserProfile => {
+  const fallbackUser = {
+    id: typeof row.id === 'string' ? row.id : '',
+    email: typeof row.email === 'string' ? row.email : '',
+  } as User;
+  return mapProfileRow(row, fallbackUser);
 };
 
 const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | null): Promise<UserProfile> => {
   const { data: row, error } = await supabase
     .from('profiles')
-    .select('id,email,full_name,role,branch_id')
+    .select('*')
     .eq('id', user.id)
     .maybeSingle();
 
@@ -814,6 +870,10 @@ const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | n
     branchId: draftMatchesUser
       ? signupDraft.branchId
       : normalizeBranchId(fallbackRole, metadata?.branchId),
+    phone: '',
+    avatarUrl: '',
+    employmentType: normalizeEmploymentType(metadata?.employmentType, fallbackRole),
+    startDate: new Date().toISOString().slice(0, 10),
   };
 
   const { error: upsertError } = await supabase.from('profiles').upsert(
@@ -833,6 +893,119 @@ const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | n
   }
 
   return fallbackProfile;
+};
+
+const loadManagedProfiles = async () => {
+  const { data: rows, error } = await supabase.from('profiles').select('*').order('full_name', { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  return (rows ?? []).map((row) => mapManagedProfileRow(row as Record<string, unknown>));
+};
+
+const saveOwnProfile = async ({
+  avatarUrl,
+  fullName,
+  phone,
+}: {
+  avatarUrl: string;
+  fullName: string;
+  phone: string;
+}) => {
+  const { data: row, error } = await supabase.rpc('update_own_profile', {
+    p_avatar_url: avatarUrl,
+    p_full_name: fullName.trim(),
+    p_phone: phone.trim(),
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  const profileRow = Array.isArray(row) ? row[0] : row;
+  if (!profileRow) {
+    throw new Error('Supabase không trả về hồ sơ vừa cập nhật.');
+  }
+
+  return mapManagedProfileRow(profileRow as Record<string, unknown>);
+};
+
+const saveManagedProfile = async (
+  id: string,
+  patch: Pick<UserProfile, 'branchId' | 'employmentType' | 'role' | 'startDate'>,
+) => {
+  const branchId = patch.role === 'owner' ? null : patch.branchId || defaultBranchId;
+  const { data: row, error } = await supabase
+    .from('profiles')
+    .update({
+      branch_id: branchId,
+      employment_type: patch.employmentType,
+      role: patch.role,
+      start_date: patch.startDate,
+    })
+    .eq('id', id)
+    .select('*')
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return mapManagedProfileRow(row as Record<string, unknown>);
+};
+
+const compressAvatarFile = async (file: File) => {
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Vui lòng chọn tệp ảnh JPG, PNG hoặc WebP.');
+  }
+
+  if (file.size > 10 * 1024 * 1024) {
+    throw new Error('Ảnh đại diện không được lớn hơn 10 MB.');
+  }
+
+  const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const sourceSize = Math.min(bitmap.width, bitmap.height);
+  const sourceX = Math.max(0, (bitmap.width - sourceSize) / 2);
+  const sourceY = Math.max(0, (bitmap.height - sourceSize) / 2);
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const context = canvas.getContext('2d');
+
+  if (!context) {
+    bitmap.close();
+    throw new Error('Trình duyệt không xử lý được ảnh này.');
+  }
+
+  context.drawImage(bitmap, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 512, 512);
+  bitmap.close();
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error('Không thể tối ưu ảnh đại diện.'))),
+      'image/webp',
+      0.84,
+    );
+  });
+};
+
+const uploadProfileAvatar = async (profileId: string, file: File) => {
+  const image = await compressAvatarFile(file);
+  const path = `${profileId}/avatar.webp`;
+  const { error } = await supabase.storage.from('avatars').upload(path, image, {
+    cacheControl: '3600',
+    contentType: 'image/webp',
+    upsert: true,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  const { data } = supabase.storage.from('avatars').getPublicUrl(path);
+  return `${data.publicUrl}?v=${Date.now()}`;
 };
 
 const applyAttendanceScope = (profile: UserProfile) => {
@@ -1375,6 +1548,7 @@ export default function App() {
   const [authLoaded, setAuthLoaded] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [authFeedback, setAuthFeedback] = useState<AuthFeedback | null>(null);
   const [remoteReady, setRemoteReady] = useState(false);
   const [syncingRemote, setSyncingRemote] = useState(false);
@@ -1971,6 +2145,7 @@ export default function App() {
   };
 
   const signOut = () => {
+    setAccountOpen(false);
     pendingSignupRef.current = null;
     setAuthFeedback(null);
     supabase.auth.signOut().catch((error) => {
@@ -2017,15 +2192,23 @@ export default function App() {
                 <Text style={styles.appSubtitle}>{activeBranch.name}</Text>
               </View>
             </View>
-            {currentRole === 'owner' ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={clearAllData}
-                style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
-              >
-                <RefreshCcw color={colors.muted} size={19} />
-              </Pressable>
-            ) : null}
+            <View style={styles.headerActions}>
+              {currentRole === 'owner' ? (
+                <Pressable
+                  accessibilityLabel="Làm mới dữ liệu hệ thống"
+                  accessibilityRole="button"
+                  onPress={clearAllData}
+                  style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+                >
+                  <RefreshCcw color={colors.muted} size={18} />
+                </Pressable>
+              ) : null}
+              <AccountAvatarButton
+                onPress={() => setAccountOpen(true)}
+                profile={profile}
+                syncing={syncingRemote}
+              />
+            </View>
           </View>
 
           <ScrollView
@@ -2040,14 +2223,6 @@ export default function App() {
             {authFeedback?.tone === 'success' ? (
               <AuthFeedbackBanner feedback={authFeedback} onDismiss={() => setAuthFeedback(null)} />
             ) : null}
-
-            <AccountContextBar
-              authEmail={session.user.email ?? profile.email}
-              branchId={selectedBranchId}
-              profile={profile}
-              syncing={syncingRemote}
-              onSignOut={signOut}
-            />
 
             <View style={styles.metricsRow}>
               <MetricTile
@@ -2207,6 +2382,25 @@ export default function App() {
               );
             })}
           </View>
+
+          {accountOpen ? (
+            <AccountPanel
+              authEmail={session.user.email ?? profile.email}
+              branchId={selectedBranchId}
+              onClose={() => setAccountOpen(false)}
+              onProfileChange={(nextProfile) => {
+                setProfile(nextProfile);
+                setCurrentRole(nextProfile.role);
+                setEmployeeName(nextProfile.fullName);
+                if (nextProfile.branchId) {
+                  setSelectedBranchId(nextProfile.branchId);
+                }
+              }}
+              onSignOut={signOut}
+              profile={profile}
+              syncing={syncingRemote}
+            />
+          ) : null}
 
           {pendingClosingExport ? (
             <View pointerEvents="none" style={styles.exportStage}>
@@ -2822,21 +3016,526 @@ function InstallAppBanner() {
   );
 }
 
-function AccountContextBar({
+function ProfileAvatar({
+  avatarUrl,
+  label,
+  large,
+}: {
+  avatarUrl: string;
+  label: string;
+  large?: boolean;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => setFailed(false), [avatarUrl]);
+
+  return (
+    <View style={[styles.profileAvatar, large && styles.profileAvatarLarge]}>
+      <Image
+        accessibilityLabel={`Ảnh đại diện ${label}`}
+        onError={() => setFailed(true)}
+        source={!failed && avatarUrl ? avatarUrl : logoImage}
+        style={styles.profileAvatarImage}
+      />
+    </View>
+  );
+}
+
+function AccountAvatarButton({
+  onPress,
+  profile,
+  syncing,
+}: {
+  onPress: () => void;
+  profile: UserProfile;
+  syncing: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityLabel="Mở quản lý tài khoản"
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [styles.accountAvatarButton, pressed && styles.pressed]}
+    >
+      <ProfileAvatar avatarUrl={profile.avatarUrl} label={profile.fullName || profile.email} />
+      <View style={[styles.accountPresenceDot, syncing && styles.accountPresenceDotSyncing]} />
+    </Pressable>
+  );
+}
+
+function ProfileInfoRow({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: typeof Clock3;
+  label: string;
+  value: string;
+}) {
+  return (
+    <View style={styles.profileInfoRow}>
+      <View style={styles.profileInfoIcon}>
+        <Icon color={colors.primary} size={18} />
+      </View>
+      <View style={styles.profileInfoCopy}>
+        <Text style={styles.profileInfoLabel}>{label}</Text>
+        <Text style={styles.profileInfoValue}>{value}</Text>
+      </View>
+    </View>
+  );
+}
+
+function AccountPanel({
   authEmail,
   branchId,
+  onClose,
+  onProfileChange,
   onSignOut,
   profile,
   syncing,
 }: {
   authEmail: string;
   branchId: string;
+  onClose: () => void;
+  onProfileChange: (profile: UserProfile) => void;
   onSignOut: () => void;
   profile: UserProfile;
   syncing: boolean;
 }) {
+  const [fullName, setFullName] = useState(profile.fullName);
+  const [phone, setPhone] = useState(profile.phone);
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState(profile.avatarUrl);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<AuthFeedback | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const roleLabel = roleOptions.find((option) => option.key === profile.role)?.label ?? 'Nhân viên';
-  const branch = profile.branchId ? getBranchById(profile.branchId) : getBranchById(branchId);
+  const workplace = profile.role === 'owner' ? 'Toàn hệ thống' : getBranchById(profile.branchId ?? branchId).name;
+  const employmentLabel = profile.employmentType === 'full_time' ? 'Full time' : 'Part time';
+
+  useEffect(() => {
+    setFullName(profile.fullName);
+    setPhone(profile.phone);
+    setAvatarPreview(profile.avatarUrl);
+    setAvatarFile(null);
+  }, [profile]);
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [onClose]);
+
+  useEffect(
+    () => () => {
+      if (avatarPreview.startsWith('blob:')) {
+        URL.revokeObjectURL(avatarPreview);
+      }
+    },
+    [avatarPreview],
+  );
+
+  const chooseAvatar = (file?: File) => {
+    if (!file) {
+      return;
+    }
+    if (!file.type.startsWith('image/')) {
+      setFeedback({ tone: 'error', title: 'Tệp không hợp lệ', message: 'Vui lòng chọn một tệp ảnh.' });
+      return;
+    }
+
+    setAvatarFile(file);
+    setAvatarPreview(URL.createObjectURL(file));
+    setFeedback(null);
+  };
+
+  const saveProfile = async () => {
+    if (saving) {
+      return;
+    }
+
+    const trimmedName = fullName.trim();
+    if (!trimmedName) {
+      setFeedback({ tone: 'error', title: 'Thiếu họ tên', message: 'Tên hiển thị không được để trống.' });
+      return;
+    }
+
+    setSaving(true);
+    setFeedback({ tone: 'info', title: 'Đang lưu hồ sơ', message: 'Đang cập nhật thông tin tài khoản...' });
+
+    try {
+      const nextAvatarUrl = avatarFile ? await uploadProfileAvatar(profile.id, avatarFile) : profile.avatarUrl;
+      const nextProfile = await saveOwnProfile({ avatarUrl: nextAvatarUrl, fullName: trimmedName, phone });
+      await supabase.auth.updateUser({ data: { fullName: nextProfile.fullName } });
+      onProfileChange(nextProfile);
+      setAvatarPreview(nextProfile.avatarUrl);
+      setAvatarFile(null);
+      setFeedback({ tone: 'success', title: 'Đã lưu hồ sơ', message: 'Tên, số điện thoại và ảnh đại diện đã được cập nhật.' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Không cập nhật được hồ sơ.';
+      setFeedback({
+        tone: 'error',
+        title: 'Không lưu được hồ sơ',
+        message: message.includes('update_own_profile') || message.includes('avatars')
+          ? 'Cơ sở dữ liệu chưa được nâng cấp. Hãy chạy lại database/supabase-schema.sql rồi thử lại.'
+          : message,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <View accessibilityRole="dialog" style={styles.accountOverlay}>
+      <Pressable
+        accessibilityLabel="Đóng quản lý tài khoản"
+        accessibilityRole="button"
+        onPress={onClose}
+        style={styles.accountBackdrop}
+      />
+      <View style={styles.accountDrawer}>
+        <View style={styles.accountDrawerHeader}>
+          <View style={styles.flex}>
+            <Text style={styles.accountDrawerEyebrow}>TÀI KHOẢN</Text>
+            <Text style={styles.accountDrawerTitle}>Hồ sơ cá nhân</Text>
+          </View>
+          <Pressable
+            accessibilityLabel="Đóng quản lý tài khoản"
+            accessibilityRole="button"
+            onPress={onClose}
+            style={({ pressed }) => [styles.accountCloseButton, pressed && styles.pressed]}
+          >
+            <X color={colors.ink} size={20} />
+          </Pressable>
+        </View>
+
+        <ScrollView
+          className="app-scroll-surface"
+          contentContainerStyle={styles.accountDrawerContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.accountHeroCard}>
+            <View style={styles.accountAvatarEditor}>
+              <ProfileAvatar avatarUrl={avatarPreview} label={fullName || profile.email} large />
+              <Pressable
+                accessibilityLabel="Chọn ảnh đại diện mới"
+                accessibilityRole="button"
+                disabled={saving}
+                onPress={() => fileInputRef.current?.click()}
+                style={({ pressed }) => [styles.avatarCameraButton, pressed && styles.pressed]}
+              >
+                <Camera color={colors.onDark} size={17} />
+              </Pressable>
+              <input
+                accept="image/jpeg,image/png,image/webp,image/heic"
+                className="account-file-input"
+                onChange={(event) => chooseAvatar(event.target.files?.[0])}
+                ref={fileInputRef}
+                type="file"
+              />
+            </View>
+            <Text style={styles.accountHeroName}>{profile.fullName || profile.email}</Text>
+            <Text style={styles.accountHeroEmail}>{profile.email}</Text>
+            <View style={styles.accountRolePill}>
+              <ShieldCheck color={colors.primary} size={14} />
+              <Text style={styles.accountRolePillText}>{roleLabel}</Text>
+            </View>
+            <Text style={styles.accountSync}>{syncing ? 'Đang đồng bộ...' : 'Đã đồng bộ Supabase'}</Text>
+          </View>
+
+          {feedback ? <AuthFeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} /> : null}
+
+          <View style={styles.accountSectionCard}>
+            <View style={styles.accountSectionHeading}>
+              <UserRound color={colors.primary} size={20} />
+              <View style={styles.flex}>
+                <Text style={styles.accountSectionTitle}>Thông tin cá nhân</Text>
+                <Text style={styles.accountSectionHint}>Bạn có thể sửa tên, số điện thoại và ảnh đại diện.</Text>
+              </View>
+            </View>
+            <FormField
+              autoComplete="name"
+              autoCapitalize="words"
+              autoCorrect={false}
+              icon={UserRound}
+              label="Họ và tên"
+              onChangeText={setFullName}
+              placeholder="Tên hiển thị"
+              value={fullName}
+            />
+            <FormField
+              autoComplete="tel"
+              autoCapitalize="none"
+              autoCorrect={false}
+              icon={Phone}
+              keyboardType="phone-pad"
+              label="Số điện thoại"
+              onChangeText={setPhone}
+              placeholder="Ví dụ: 0901 234 567"
+              value={phone}
+            />
+            <PrimaryButton
+              icon={Save}
+              label={saving ? 'Đang lưu hồ sơ...' : 'Lưu thay đổi'}
+              onPress={() => void saveProfile()}
+              tone="primary"
+            />
+          </View>
+
+          <View style={styles.accountSectionCard}>
+            <View style={styles.accountSectionHeading}>
+              <ShieldCheck color={colors.primary} size={20} />
+              <View style={styles.flex}>
+                <Text style={styles.accountSectionTitle}>Thông tin công việc</Text>
+                <Text style={styles.accountSectionHint}>Chỉ Chủ cửa hàng có quyền thay đổi các mục này.</Text>
+              </View>
+            </View>
+            <ProfileInfoRow icon={ShieldCheck} label="Vị trí" value={roleLabel} />
+            <ProfileInfoRow icon={Store} label="Nơi làm việc" value={workplace} />
+            <ProfileInfoRow icon={Clock3} label="Hình thức làm việc" value={employmentLabel} />
+            <ProfileInfoRow
+              icon={CalendarDays}
+              label="Thâm niên"
+              value={`${formatSeniority(profile.startDate)} • Từ ${formatProfileDate(profile.startDate)}`}
+            />
+          </View>
+
+          {profile.role === 'owner' ? (
+            <OwnerStaffManager currentProfile={profile} onCurrentProfileChange={onProfileChange} />
+          ) : null}
+
+          <View style={styles.accountSectionCard}>
+            <View style={styles.accountSectionHeading}>
+              <KeyRound color={colors.primary} size={20} />
+              <View style={styles.flex}>
+                <Text style={styles.accountSectionTitle}>Bảo mật tài khoản</Text>
+                <Text style={styles.accountSectionHint}>Đổi mật khẩu hoặc đăng xuất khỏi thiết bị.</Text>
+              </View>
+            </View>
+            <AccountSecuritySection authEmail={authEmail} onSignOut={onSignOut} />
+          </View>
+        </ScrollView>
+      </View>
+    </View>
+  );
+}
+
+function OwnerStaffManager({
+  currentProfile,
+  onCurrentProfileChange,
+}: {
+  currentProfile: UserProfile;
+  onCurrentProfileChange: (profile: UserProfile) => void;
+}) {
+  const [profiles, setProfiles] = useState<UserProfile[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [role, setRole] = useState<UserRole>('employee');
+  const [branchId, setBranchId] = useState(defaultBranchId);
+  const [employmentType, setEmploymentType] = useState<EmploymentType>('part_time');
+  const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<AuthFeedback | null>(null);
+  const selectedProfile = profiles.find((item) => item.id === selectedId);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadManagedProfiles()
+      .then((nextProfiles) => {
+        if (!cancelled) {
+          setProfiles(nextProfiles);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setFeedback({
+            tone: 'error',
+            title: 'Không tải được danh sách nhân sự',
+            message: error instanceof Error ? error.message : 'Vui lòng thử lại.',
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectProfile = (nextProfile: UserProfile) => {
+    setSelectedId((current) => (current === nextProfile.id ? null : nextProfile.id));
+    setRole(nextProfile.role);
+    setBranchId(nextProfile.branchId ?? defaultBranchId);
+    setEmploymentType(nextProfile.employmentType);
+    setStartDate(nextProfile.startDate);
+    setFeedback(null);
+  };
+
+  const saveWorkProfile = async () => {
+    if (!selectedProfile || saving) {
+      return;
+    }
+
+    setSaving(true);
+    setFeedback({ tone: 'info', title: 'Đang cập nhật nhân sự', message: 'Đang lưu phân quyền và thông tin làm việc...' });
+    try {
+      const nextProfile = await saveManagedProfile(selectedProfile.id, {
+        branchId: role === 'owner' ? null : branchId,
+        employmentType,
+        role,
+        startDate,
+      });
+      setProfiles((current) => current.map((item) => (item.id === nextProfile.id ? nextProfile : item)));
+      if (nextProfile.id === currentProfile.id) {
+        onCurrentProfileChange(nextProfile);
+      }
+      setFeedback({ tone: 'success', title: 'Đã cập nhật', message: `Đã lưu thông tin làm việc của ${nextProfile.fullName || nextProfile.email}.` });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Không cập nhật được hồ sơ nhân sự.';
+      setFeedback({
+        tone: 'error',
+        title: 'Không cập nhật được',
+        message: message.includes('employment_type') || message.includes('start_date')
+          ? 'Cơ sở dữ liệu chưa được nâng cấp. Hãy chạy lại database/supabase-schema.sql rồi thử lại.'
+          : message,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <View style={styles.accountSectionCard}>
+      <View style={styles.accountSectionHeading}>
+        <UsersRound color={colors.primary} size={21} />
+        <View style={styles.flex}>
+          <Text style={styles.accountSectionTitle}>Quản lý nhân sự</Text>
+          <Text style={styles.accountSectionHint}>Chọn một tài khoản để phân quyền và cập nhật thông tin làm việc.</Text>
+        </View>
+      </View>
+
+      {feedback ? <AuthFeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} /> : null}
+      {loading ? <Text style={styles.accountLoadingText}>Đang tải danh sách nhân sự...</Text> : null}
+
+      <View style={styles.staffList}>
+        {profiles.map((staffProfile) => {
+          const staffRole = roleOptions.find((option) => option.key === staffProfile.role)?.label ?? 'Nhân viên';
+          const selected = selectedId === staffProfile.id;
+          const staffBranch = staffProfile.role === 'owner'
+            ? 'Toàn hệ thống'
+            : getBranchById(staffProfile.branchId ?? defaultBranchId).name;
+
+          return (
+            <View key={staffProfile.id} style={[styles.staffCard, selected && styles.staffCardActive]}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => selectProfile(staffProfile)}
+                style={({ pressed }) => [styles.staffCardButton, pressed && styles.pressed]}
+              >
+                <ProfileAvatar avatarUrl={staffProfile.avatarUrl} label={staffProfile.fullName || staffProfile.email} />
+                <View style={styles.staffCardCopy}>
+                  <Text style={styles.staffCardName}>{staffProfile.fullName || staffProfile.email}</Text>
+                  <Text style={styles.staffCardMeta}>{staffRole} • {staffBranch}</Text>
+                  <Text style={styles.staffCardPhone}>{staffProfile.phone || 'Chưa có số điện thoại'}</Text>
+                </View>
+                <ChevronRight
+                  color={colors.muted}
+                  size={18}
+                  style={{ transform: selected ? 'rotate(90deg)' : 'none' }}
+                />
+              </Pressable>
+
+              {selected ? (
+                <View style={styles.staffEditor}>
+                  <View style={styles.nativeField}>
+                    <Text style={styles.inputLabel}>Vị trí</Text>
+                    <select
+                      className="account-native-field"
+                      disabled={staffProfile.id === currentProfile.id}
+                      onChange={(event) => {
+                        const nextRole = event.target.value as UserRole;
+                        setRole(nextRole);
+                        if (nextRole !== 'owner' && !branchId) {
+                          setBranchId(defaultBranchId);
+                        }
+                      }}
+                      value={role}
+                    >
+                      {roleOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+                    </select>
+                    {staffProfile.id === currentProfile.id ? (
+                      <Text style={styles.nativeFieldHint}>Không thể tự hạ quyền Chủ cửa hàng.</Text>
+                    ) : null}
+                  </View>
+
+                  <View style={styles.nativeField}>
+                    <Text style={styles.inputLabel}>Nơi làm việc</Text>
+                    <select
+                      className="account-native-field"
+                      disabled={role === 'owner'}
+                      onChange={(event) => setBranchId(event.target.value)}
+                      value={role === 'owner' ? '' : branchId}
+                    >
+                      {role === 'owner' ? <option value="">Toàn hệ thống</option> : null}
+                      {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+                    </select>
+                  </View>
+
+                  <View style={styles.nativeField}>
+                    <Text style={styles.inputLabel}>Hình thức làm việc</Text>
+                    <select
+                      className="account-native-field"
+                      onChange={(event) => setEmploymentType(event.target.value as EmploymentType)}
+                      value={employmentType}
+                    >
+                      <option value="full_time">Full time</option>
+                      <option value="part_time">Part time</option>
+                    </select>
+                  </View>
+
+                  <View style={styles.nativeField}>
+                    <Text style={styles.inputLabel}>Ngày bắt đầu làm việc</Text>
+                    <input
+                      className="account-native-field"
+                      max={new Date().toISOString().slice(0, 10)}
+                      onChange={(event) => setStartDate(event.target.value)}
+                      type="date"
+                      value={startDate}
+                    />
+                    <Text style={styles.nativeFieldHint}>Thâm niên hiện tại: {formatSeniority(startDate)}</Text>
+                  </View>
+
+                  <PrimaryButton
+                    icon={Save}
+                    label={saving ? 'Đang lưu...' : 'Lưu thông tin làm việc'}
+                    onPress={() => void saveWorkProfile()}
+                    tone="primary"
+                  />
+                </View>
+              ) : null}
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function AccountSecuritySection({
+  authEmail,
+  onSignOut,
+}: {
+  authEmail: string;
+  onSignOut: () => void;
+}) {
   const [showPasswordForm, setShowPasswordForm] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -2955,37 +3654,24 @@ function AccountContextBar({
   };
 
   return (
-    <View style={styles.contextPanel}>
-      <View style={styles.accountRow}>
-        <View style={styles.accountIcon}>
-          <ShieldCheck color={colors.primary} size={20} />
-        </View>
-        <View style={styles.accountDetails}>
-          <Text style={styles.accountName}>{profile.fullName || profile.email}</Text>
-          <Text style={styles.accountMeta}>
-            {roleLabel}
-            {profile.role !== 'owner' ? ` - ${branch.name}` : ' - Toàn hệ thống'}
-          </Text>
-          <Text style={styles.accountSync}>{syncing ? 'Đang đồng bộ Supabase...' : 'Đã kết nối Supabase'}</Text>
-        </View>
-        <View style={styles.accountActions}>
-          <Pressable
-            accessibilityRole="button"
-            disabled={savingPassword}
-            onPress={togglePasswordForm}
-            style={({ pressed }) => [
-              styles.passwordToggleButton,
-              savingPassword && styles.buttonDisabled,
-              pressed && styles.pressed,
-            ]}
-          >
-            <KeyRound color={colors.onDark} size={15} />
-            <Text style={styles.passwordToggleText}>{showPasswordForm ? 'Đóng' : 'Đổi mật khẩu'}</Text>
-          </Pressable>
-          <Pressable accessibilityRole="button" onPress={onSignOut} style={styles.signOutButton}>
-            <Text style={styles.signOutText}>Đăng xuất</Text>
-          </Pressable>
-        </View>
+    <View style={styles.accountSecurity}>
+      <View style={styles.accountSecurityActions}>
+        <Pressable
+          accessibilityRole="button"
+          disabled={savingPassword}
+          onPress={togglePasswordForm}
+          style={({ pressed }) => [
+            styles.passwordToggleButton,
+            savingPassword && styles.buttonDisabled,
+            pressed && styles.pressed,
+          ]}
+        >
+          <KeyRound color={colors.onDark} size={15} />
+          <Text style={styles.passwordToggleText}>{showPasswordForm ? 'Đóng đổi mật khẩu' : 'Đổi mật khẩu'}</Text>
+        </Pressable>
+        <Pressable accessibilityRole="button" onPress={onSignOut} style={styles.signOutButton}>
+          <Text style={styles.signOutText}>Đăng xuất</Text>
+        </Pressable>
       </View>
 
       {showPasswordForm ? (
@@ -4683,6 +5369,61 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     width: 44,
   },
+  headerActions: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexShrink: 0,
+    gap: 7,
+  },
+  accountAvatarButton: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderColor: colors.primary,
+    borderRadius: 999,
+    borderWidth: 2,
+    height: 46,
+    justifyContent: 'center',
+    padding: 2,
+    width: 46,
+  },
+  profileAvatar: {
+    backgroundColor: colors.surfaceStrong,
+    borderColor: colors.line,
+    borderRadius: 999,
+    borderWidth: 1,
+    height: 38,
+    overflow: 'hidden',
+    width: 38,
+  },
+  profileAvatarLarge: {
+    borderColor: 'rgba(255, 248, 238, 0.52)',
+    borderWidth: 3,
+    height: 92,
+    shadowColor: colors.deep,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.24,
+    shadowRadius: 18,
+    width: 92,
+  },
+  profileAvatarImage: {
+    height: '100%',
+    resizeMode: 'cover',
+    width: '100%',
+  },
+  accountPresenceDot: {
+    backgroundColor: '#78A85B',
+    borderColor: colors.surfaceStrong,
+    borderRadius: 999,
+    borderWidth: 2,
+    bottom: -1,
+    height: 12,
+    position: 'absolute',
+    right: -1,
+    width: 12,
+  },
+  accountPresenceDotSyncing: {
+    backgroundColor: colors.gold,
+  },
   pressed: {
     opacity: 0.72,
   },
@@ -5226,6 +5967,272 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 9,
     textAlign: 'center',
+  },
+  accountOverlay: {
+    bottom: 0,
+    left: 0,
+    position: 'fixed',
+    right: 0,
+    top: 0,
+    zIndex: 1000,
+  },
+  accountBackdrop: {
+    backgroundColor: 'rgba(35, 22, 15, 0.58)',
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    zIndex: 0,
+  },
+  accountDrawer: {
+    alignSelf: 'flex-end',
+    backgroundColor: colors.background,
+    borderLeftColor: colors.lineStrong,
+    borderLeftWidth: 1,
+    flex: 1,
+    height: '100%',
+    maxWidth: 430,
+    minWidth: 0,
+    paddingBottom: 'env(safe-area-inset-bottom)',
+    paddingTop: 'env(safe-area-inset-top)',
+    shadowColor: colors.deep,
+    shadowOffset: { width: -16, height: 0 },
+    shadowOpacity: 0.24,
+    shadowRadius: 36,
+    width: '100%',
+    zIndex: 1,
+  },
+  accountDrawerHeader: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceStrong,
+    borderBottomColor: colors.line,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    minHeight: 72,
+    paddingBottom: 10,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  accountDrawerEyebrow: {
+    color: colors.accent,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1.1,
+  },
+  accountDrawerTitle: {
+    color: colors.ink,
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: -0.3,
+    marginTop: 2,
+  },
+  accountCloseButton: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceSoft,
+    borderColor: colors.line,
+    borderRadius: 999,
+    borderWidth: 1,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  accountDrawerContent: {
+    gap: 12,
+    paddingBottom: 28,
+    paddingHorizontal: 12,
+    paddingTop: 12,
+  },
+  accountHeroCard: {
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    borderRadius: 22,
+    overflow: 'hidden',
+    paddingBottom: 18,
+    paddingHorizontal: 16,
+    paddingTop: 22,
+    shadowColor: colors.deep,
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+  },
+  accountAvatarEditor: {
+    alignItems: 'center',
+    marginBottom: 11,
+    position: 'relative',
+  },
+  avatarCameraButton: {
+    alignItems: 'center',
+    backgroundColor: colors.accent,
+    borderColor: colors.onDark,
+    borderRadius: 999,
+    borderWidth: 2,
+    bottom: -3,
+    height: 36,
+    justifyContent: 'center',
+    position: 'absolute',
+    right: -3,
+    width: 36,
+  },
+  accountHeroName: {
+    color: colors.onDark,
+    fontSize: 20,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  accountHeroEmail: {
+    color: 'rgba(255, 248, 238, 0.7)',
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 3,
+    textAlign: 'center',
+  },
+  accountRolePill: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: 999,
+    flexDirection: 'row',
+    gap: 5,
+    marginTop: 10,
+    minHeight: 30,
+    paddingHorizontal: 11,
+  },
+  accountRolePillText: {
+    color: colors.primary,
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  accountSectionCard: {
+    backgroundColor: colors.surfaceStrong,
+    borderColor: colors.line,
+    borderRadius: 18,
+    borderWidth: 1,
+    gap: 13,
+    padding: 13,
+  },
+  accountSectionHeading: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: 9,
+  },
+  accountSectionTitle: {
+    color: colors.ink,
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  accountSectionHint: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  profileInfoRow: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.line,
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 10,
+    minHeight: 60,
+    padding: 10,
+  },
+  profileInfoIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: 11,
+    height: 38,
+    justifyContent: 'center',
+    width: 38,
+  },
+  profileInfoCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  profileInfoLabel: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  profileInfoValue: {
+    color: colors.ink,
+    fontSize: 13,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  accountSecurity: {
+    gap: 10,
+  },
+  accountSecurityActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  accountLoadingText: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '700',
+    paddingVertical: 8,
+    textAlign: 'center',
+  },
+  staffList: {
+    gap: 8,
+  },
+  staffCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.line,
+    borderRadius: 15,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  staffCardActive: {
+    borderColor: colors.primary,
+  },
+  staffCardButton: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 9,
+    minHeight: 70,
+    padding: 10,
+    textAlign: 'left',
+  },
+  staffCardCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  staffCardName: {
+    color: colors.ink,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  staffCardMeta: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 3,
+  },
+  staffCardPhone: {
+    color: colors.primary,
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 3,
+  },
+  staffEditor: {
+    borderTopColor: colors.line,
+    borderTopWidth: 1,
+    gap: 12,
+    padding: 11,
+  },
+  nativeField: {
+    gap: 6,
+  },
+  nativeFieldHint: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 15,
   },
   accountRow: {
     alignItems: 'center',

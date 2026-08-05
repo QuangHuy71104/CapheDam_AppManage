@@ -261,6 +261,7 @@ export type KeyboardTypeOptions =
   | 'numeric'
   | 'number-pad'
   | 'decimal-pad'
+  | 'phone-pad'
   | 'numbers-and-punctuation';
 
 export type TextInput = HTMLInputElement | HTMLTextAreaElement;
@@ -330,6 +331,8 @@ export const TextInput = forwardRef<TextInput, TextInputProps>(function TextInpu
       ? 'email'
       : keyboardType === 'number-pad' || keyboardType === 'numeric'
         ? 'numeric'
+        : keyboardType === 'phone-pad'
+          ? 'tel'
         : keyboardType === 'decimal-pad'
           ? 'decimal'
           : 'text';
@@ -368,18 +371,26 @@ export const TextInput = forwardRef<TextInput, TextInputProps>(function TextInpu
     return <textarea {...sharedProps} ref={(node) => assignRef(ref, node)} />;
   }
 
-  return <input {...sharedProps} ref={(node) => assignRef(ref, node)} type={secureTextEntry ? 'password' : keyboardType === 'email-address' ? 'email' : 'text'} />;
+  return (
+    <input
+      {...sharedProps}
+      ref={(node) => assignRef(ref, node)}
+      type={secureTextEntry ? 'password' : keyboardType === 'email-address' ? 'email' : keyboardType === 'phone-pad' ? 'tel' : 'text'}
+    />
+  );
 });
 
 type ImageProps = AccessibilityProps & {
+  onError?: () => void;
   source: string | { uri: string };
   style?: StyleValue;
 };
 
-export function Image({ accessibilityLabel, source, style }: ImageProps) {
+export function Image({ accessibilityLabel, onError, source, style }: ImageProps) {
   return (
     <img
       alt={accessibilityLabel ?? ''}
+      onError={onError}
       src={typeof source === 'string' ? source : source.uri}
       style={{ maxWidth: '100%', minWidth: 0, ...flattenStyle(style) }}
     />

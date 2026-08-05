@@ -32,8 +32,12 @@ create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   email text not null unique,
   full_name text not null,
+  phone text not null default '',
   role text not null default 'employee' check (role in ('owner', 'manager', 'employee')),
   branch_id text references public.branches(id) on update cascade on delete restrict,
+  employment_type text not null default 'part_time' check (employment_type in ('full_time', 'part_time')),
+  start_date date not null default current_date,
+  avatar_url text not null default '',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint profiles_role_branch_check check (
@@ -59,6 +63,27 @@ begin
       and column_name = 'email'
   ) then
     alter table public.profiles rename column phone to email;
+  end if;
+end $$;
+
+-- Add account-management fields when upgrading an existing database.
+alter table public.profiles add column if not exists phone text not null default '';
+alter table public.profiles add column if not exists employment_type text not null default 'part_time';
+alter table public.profiles add column if not exists start_date date not null default current_date;
+alter table public.profiles add column if not exists avatar_url text not null default '';
+
+update public.profiles
+set employment_type = 'part_time'
+where employment_type not in ('full_time', 'part_time');
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'profiles_employment_type_check'
+  ) then
+    alter table public.profiles
+      add constraint profiles_employment_type_check
+      check (employment_type in ('full_time', 'part_time'));
   end if;
 end $$;
 
@@ -235,6 +260,108 @@ as $$
     or public.is_manager_for(target_branch_id)
     or public.current_branch_id() = target_branch_id
 $$;
+
+-- Employees can only change their own display name, phone number and avatar.
+-- Role, branch, employment type and start date remain owner-only fields.
+create or replace function public.update_own_profile(
+  p_full_name text,
+  p_phone text,
+  p_avatar_url text
+)
+returns public.profiles
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  updated_profile public.profiles;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+
+  if nullif(trim(p_full_name), '') is null then
+    raise exception 'Full name is required';
+  end if;
+
+  update public.profiles
+  set
+    full_name = trim(p_full_name),
+    phone = trim(coalesce(p_phone, '')),
+    avatar_url = trim(coalesce(p_avatar_url, ''))
+  where id = auth.uid()
+  returning * into updated_profile;
+
+  if updated_profile.id is null then
+    raise exception 'Profile not found';
+  end if;
+
+  return updated_profile;
+end;
+$$;
+
+revoke all on function public.update_own_profile(text, text, text) from public;
+grant execute on function public.update_own_profile(text, text, text) to authenticated;
+
+-- Public avatar bucket. Upload/update/delete policies are restricted to the
+-- authenticated user's own UUID folder: avatars/<user-id>/avatar.webp.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'avatars',
+  'avatars',
+  true,
+  5242880,
+  array['image/jpeg', 'image/png', 'image/webp', 'image/heic']
+)
+on conflict (id) do update
+set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "avatar_images_select_own" on storage.objects;
+create policy "avatar_images_select_own"
+on storage.objects
+for select
+to authenticated
+using (
+  bucket_id = 'avatars'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+drop policy if exists "avatar_images_insert_own" on storage.objects;
+create policy "avatar_images_insert_own"
+on storage.objects
+for insert
+to authenticated
+with check (
+  bucket_id = 'avatars'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+drop policy if exists "avatar_images_update_own" on storage.objects;
+create policy "avatar_images_update_own"
+on storage.objects
+for update
+to authenticated
+using (
+  bucket_id = 'avatars'
+  and (storage.foldername(name))[1] = auth.uid()::text
+)
+with check (
+  bucket_id = 'avatars'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+drop policy if exists "avatar_images_delete_own" on storage.objects;
+create policy "avatar_images_delete_own"
+on storage.objects
+for delete
+to authenticated
+using (
+  bucket_id = 'avatars'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
 
 drop policy if exists "branches_select" on public.branches;
 create policy "branches_select"
