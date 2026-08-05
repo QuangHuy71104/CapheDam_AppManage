@@ -77,8 +77,11 @@ const toAccountProfile = (row: ProfileRow, user?: User | null): AccountProfile =
 };
 
 export default async function handler(request: VercelRequest, response: VercelResponse) {
-  const supabaseUrl = process.env.VITE_SUPABASE_URL ?? process.env.SUPABASE_URL;
-  const secretKey = process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const runtimeEnvironment = (globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env;
+  const supabaseUrl = runtimeEnvironment?.VITE_SUPABASE_URL ?? runtimeEnvironment?.SUPABASE_URL;
+  const secretKey = runtimeEnvironment?.SUPABASE_SECRET_KEY ?? runtimeEnvironment?.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!supabaseUrl || !secretKey) {
     return send(response, 503, {
@@ -241,7 +244,8 @@ export default async function handler(request: VercelRequest, response: VercelRe
       return send(response, 400, { message: 'Ảnh đã chọn không đọc được. Vui lòng chọn ảnh khác.' });
     }
 
-    const image = Buffer.from(match[2], 'base64');
+    const binaryImage = atob(match[2]);
+    const image = Uint8Array.from(binaryImage, (character) => character.charCodeAt(0));
     if (image.byteLength > 1024 * 1024) {
       return send(response, 400, { message: 'Ảnh quá lớn. Vui lòng chọn ảnh khác.' });
     }
