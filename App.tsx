@@ -235,6 +235,7 @@ type PendingSignupDraft = {
 };
 
 const STORAGE_KEY = 'caphedam-appmanage-v1';
+const PROFILE_OVERRIDE_PREFIX = 'caphedam-profile-override-';
 const logoImage = new URL('./assets/logo.jpg', import.meta.url).href;
 
 const initialData: AppData = {
@@ -638,6 +639,8 @@ const getWeekdayLabel = (monthKey: string, day: number) => {
 };
 
 const isCurrentMonth = (monthKey: string) => monthKey === getMonthKey();
+const isPastMonth = (monthKey: string) => monthKey < getMonthKey();
+const isFutureMonth = (monthKey: string) => monthKey > getMonthKey();
 
 const getMonthCutoffDate = (monthKey: string, dayOffsetFromEnd: number) => {
   const { month, year } = parseMonthKey(monthKey);
@@ -788,6 +791,48 @@ const normalizeProfileDate = (value: unknown, fallback?: unknown) => {
   return match?.[0] ?? new Date().toISOString().slice(0, 10);
 };
 
+type EditableProfileOverride = Pick<UserProfile, 'avatarUrl' | 'fullName' | 'phone'>;
+
+const readLocalProfileOverride = async (userId: string): Promise<Partial<EditableProfileOverride>> => {
+  try {
+    const rawValue = await webStorage.getItem(`${PROFILE_OVERRIDE_PREFIX}${userId}`);
+    if (!rawValue) {
+      return {};
+    }
+    const value = JSON.parse(rawValue) as Record<string, unknown>;
+    return {
+      avatarUrl: typeof value.avatarUrl === 'string' ? value.avatarUrl : undefined,
+      fullName: typeof value.fullName === 'string' && value.fullName.trim() ? value.fullName.trim() : undefined,
+      phone: typeof value.phone === 'string' ? value.phone : undefined,
+    };
+  } catch {
+    return {};
+  }
+};
+
+const saveLocalProfileOverride = async (userId: string, value: EditableProfileOverride) => {
+  try {
+    await webStorage.setItem(`${PROFILE_OVERRIDE_PREFIX}${userId}`, JSON.stringify(value));
+  } catch {
+    // Auth/database persistence still succeeds if device storage is unavailable.
+  }
+};
+
+const applySelfProfileOverrides = async (profile: UserProfile, user: User) => {
+  const metadata = user.user_metadata as Record<string, unknown> | undefined;
+  const localValue = await readLocalProfileOverride(user.id);
+  const metadataName = typeof metadata?.fullName === 'string' && metadata.fullName.trim() ? metadata.fullName.trim() : undefined;
+  const metadataPhone = typeof metadata?.phone === 'string' ? metadata.phone : undefined;
+  const metadataAvatar = typeof metadata?.avatarUrl === 'string' ? metadata.avatarUrl : undefined;
+
+  return {
+    ...profile,
+    fullName: localValue.fullName ?? metadataName ?? profile.fullName,
+    phone: localValue.phone ?? metadataPhone ?? profile.phone,
+    avatarUrl: localValue.avatarUrl ?? metadataAvatar ?? profile.avatarUrl,
+  };
+};
+
 const normalizeAttendanceDays = (value: unknown): Record<string, AttendanceDayEntry> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -843,7 +888,7 @@ const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | n
   }
 
   if (row) {
-    return mapProfileRow(row as Record<string, unknown>, user);
+    return applySelfProfileOverrides(mapProfileRow(row as Record<string, unknown>, user), user);
   }
 
   const normalizedUserEmail = normalizeEmailAddress(user.email ?? '');
@@ -870,8 +915,8 @@ const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | n
     branchId: draftMatchesUser
       ? signupDraft.branchId
       : normalizeBranchId(fallbackRole, metadata?.branchId),
-    phone: '',
-    avatarUrl: '',
+    phone: typeof metadata?.phone === 'string' ? metadata.phone : '',
+    avatarUrl: typeof metadata?.avatarUrl === 'string' ? metadata.avatarUrl : '',
     employmentType: normalizeEmploymentType(metadata?.employmentType, fallbackRole),
     startDate: new Date().toISOString().slice(0, 10),
   };
@@ -892,7 +937,7 @@ const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | n
     throw upsertError;
   }
 
-  return fallbackProfile;
+  return applySelfProfileOverrides(fallbackProfile, user);
 };
 
 const loadManagedProfiles = async () => {
@@ -991,8 +1036,15 @@ const compressAvatarFile = async (file: File) => {
   });
 };
 
-const uploadProfileAvatar = async (profileId: string, file: File) => {
-  const image = await compressAvatarFile(file);
+const blobToDataUrl = (blob: Blob) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(new Error('Không đọc được ảnh đại diện.'));
+    reader.readAsDataURL(blob);
+  });
+
+const uploadProfileAvatar = async (profileId: string, image: Blob) => {
   const path = `${profileId}/avatar.webp`;
   const { error } = await supabase.storage.from('avatars').upload(path, image, {
     cacheControl: '3600',
@@ -1849,7 +1901,12 @@ export default function App() {
     }
 
     if (!isCurrentMonth(selectedMonthKey)) {
-      Alert.alert('Chỉ chấm công tháng hiện tại', 'Các tháng cũ chỉ dùng để xem lại bảng công đã lưu.');
+      Alert.alert(
+        isFutureMonth(selectedMonthKey) ? 'Tháng này chưa bắt đầu' : 'Chỉ chấm công tháng hiện tại',
+        isFutureMonth(selectedMonthKey)
+          ? 'Không thể chấm công trước cho một tháng trong tương lai.'
+          : 'Các tháng cũ chỉ dùng để xem lại bảng công đã lưu.',
+      );
       return;
     }
 
@@ -1894,7 +1951,10 @@ export default function App() {
     }
 
     if (!isCurrentMonth(selectedMonthKey)) {
-      Alert.alert('Không thể xác nhận tháng cũ', 'Nhân viên chỉ xác nhận bảng lương của tháng hiện tại.');
+      Alert.alert(
+        isFutureMonth(selectedMonthKey) ? 'Tháng này chưa bắt đầu' : 'Không thể xác nhận tháng cũ',
+        'Nhân viên chỉ xác nhận bảng lương của tháng hiện tại.',
+      );
       return;
     }
 
@@ -1918,6 +1978,32 @@ export default function App() {
           ...sheet,
           employeeConfirmedAt: new Date().toISOString(),
         }),
+      ),
+    }));
+  };
+
+  const cancelEmployeePayroll = (employee: string) => {
+    const trimmedName = employee.trim();
+    if (!trimmedName || !isCurrentMonth(selectedMonthKey)) {
+      return;
+    }
+
+    if (branchPayrollConfirmation?.managerConfirmedAt) {
+      Alert.alert(
+        'Bảng lương chi nhánh đã gửi',
+        'Quản lí cần hủy xác nhận gửi Chủ cửa hàng trước khi bạn có thể mở lại bảng công.',
+      );
+      return;
+    }
+
+    setData((current) => ({
+      ...current,
+      attendanceSheets: current.attendanceSheets.map((sheet) =>
+        sheet.branchId === selectedBranchId &&
+        sheet.monthKey === selectedMonthKey &&
+        sheet.employeeName.trim().toLowerCase() === trimmedName.toLowerCase()
+          ? { ...sheet, employeeConfirmedAt: undefined }
+          : sheet,
       ),
     }));
   };
@@ -2249,6 +2335,7 @@ export default function App() {
                   employeeName={signedEmployeeName}
                   monthKey={selectedMonthKey}
                   onCancelBranchPayroll={cancelBranchPayroll}
+                  onCancelEmployeePayroll={cancelEmployeePayroll}
                   onConfirmBranchPayroll={confirmBranchPayroll}
                   onConfirmEmployeePayroll={confirmEmployeePayroll}
                   onMonthChange={setSelectedMonthKey}
@@ -2263,6 +2350,7 @@ export default function App() {
                   employeeName={employeeName}
                   monthKey={selectedMonthKey}
                   onConfirmPayroll={confirmEmployeePayroll}
+                  onCancelPayroll={cancelEmployeePayroll}
                   onMonthChange={setSelectedMonthKey}
                   onNameChange={setEmployeeName}
                   onUpdateCell={updateAttendanceCell}
@@ -2389,6 +2477,17 @@ export default function App() {
               branchId={selectedBranchId}
               onClose={() => setAccountOpen(false)}
               onProfileChange={(nextProfile) => {
+                if (nextProfile.fullName !== profile.fullName) {
+                  setData((current) => ({
+                    ...current,
+                    attendanceSheets: current.attendanceSheets.map((sheet) =>
+                      sheet.userId === nextProfile.id ||
+                      (sheet.branchId === profile.branchId && sheet.employeeName === profile.fullName)
+                        ? { ...sheet, employeeName: nextProfile.fullName }
+                        : sheet,
+                    ),
+                  }));
+                }
                 setProfile(nextProfile);
                 setCurrentRole(nextProfile.role);
                 setEmployeeName(nextProfile.fullName);
@@ -3168,21 +3267,68 @@ function AccountPanel({
     setFeedback({ tone: 'info', title: 'Đang lưu hồ sơ', message: 'Đang cập nhật thông tin tài khoản...' });
 
     try {
-      const nextAvatarUrl = avatarFile ? await uploadProfileAvatar(profile.id, avatarFile) : profile.avatarUrl;
-      const nextProfile = await saveOwnProfile({ avatarUrl: nextAvatarUrl, fullName: trimmedName, phone });
-      await supabase.auth.updateUser({ data: { fullName: nextProfile.fullName } });
+      let nextAvatarUrl = profile.avatarUrl;
+      let avatarForDatabase = profile.avatarUrl.startsWith('data:') ? '' : profile.avatarUrl;
+      let localAvatarFallback = profile.avatarUrl.startsWith('data:');
+
+      if (avatarFile) {
+        const optimizedAvatar = await compressAvatarFile(avatarFile);
+        try {
+          nextAvatarUrl = await uploadProfileAvatar(profile.id, optimizedAvatar);
+          avatarForDatabase = nextAvatarUrl;
+        } catch {
+          nextAvatarUrl = await blobToDataUrl(optimizedAvatar);
+          localAvatarFallback = true;
+        }
+      }
+
+      const editableProfile = { avatarUrl: nextAvatarUrl, fullName: trimmedName, phone: phone.trim() };
+      await saveLocalProfileOverride(profile.id, editableProfile);
+
+      const authMetadata = {
+        fullName: editableProfile.fullName,
+        phone: editableProfile.phone,
+        ...(!localAvatarFallback && !nextAvatarUrl.startsWith('data:') ? { avatarUrl: nextAvatarUrl } : {}),
+      };
+      const { error: authUpdateError } = await supabase.auth.updateUser({ data: authMetadata });
+      if (authUpdateError) {
+        throw authUpdateError;
+      }
+
+      let databaseSynced = true;
+      let databaseProfile: UserProfile | null = null;
+      try {
+        databaseProfile = await saveOwnProfile({
+          avatarUrl: avatarForDatabase,
+          fullName: editableProfile.fullName,
+          phone: editableProfile.phone,
+        });
+      } catch {
+        databaseSynced = false;
+      }
+
+      const nextProfile = {
+        ...(databaseProfile ?? profile),
+        ...editableProfile,
+      };
       onProfileChange(nextProfile);
       setAvatarPreview(nextProfile.avatarUrl);
       setAvatarFile(null);
-      setFeedback({ tone: 'success', title: 'Đã lưu hồ sơ', message: 'Tên, số điện thoại và ảnh đại diện đã được cập nhật.' });
+      setFeedback({
+        tone: 'success',
+        title: 'Đã lưu hồ sơ',
+        message: localAvatarFallback
+          ? 'Tên và số điện thoại đã lưu vào tài khoản; ảnh đã lưu trên thiết bị này vì Storage chưa được cấu hình.'
+          : databaseSynced
+            ? 'Tên, số điện thoại và ảnh đại diện đã được cập nhật.'
+            : 'Tên và số điện thoại đã lưu vào tài khoản. Chạy schema mới để đồng bộ thêm với bảng hồ sơ.',
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Không cập nhật được hồ sơ.';
       setFeedback({
         tone: 'error',
         title: 'Không lưu được hồ sơ',
-        message: message.includes('update_own_profile') || message.includes('avatars')
-          ? 'Cơ sở dữ liệu chưa được nâng cấp. Hãy chạy lại database/supabase-schema.sql rồi thử lại.'
-          : message,
+        message,
       });
     } finally {
       setSaving(false);
@@ -3823,26 +3969,160 @@ function MonthNavigator({
   monthKey: string;
   onChange: (value: string) => void;
 }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+
   return (
-    <View style={styles.monthNavigator}>
-      <Pressable
-        accessibilityRole="button"
-        onPress={() => onChange(shiftMonthKey(monthKey, -1))}
-        style={({ pressed }) => [styles.monthButton, pressed && styles.pressed]}
-      >
-        <ChevronLeft color={colors.primary} size={18} />
-      </Pressable>
-      <View style={styles.monthCurrent}>
-        <CalendarDays color={colors.primary} size={18} />
-        <Text style={styles.monthCurrentText}>{formatMonthKey(monthKey)}</Text>
+    <>
+      <View style={styles.monthNavigator}>
+        <Pressable
+          accessibilityLabel="Xem tháng trước"
+          accessibilityRole="button"
+          onPress={() => onChange(shiftMonthKey(monthKey, -1))}
+          style={({ pressed }) => [styles.monthButton, pressed && styles.pressed]}
+        >
+          <ChevronLeft color={colors.primary} size={18} />
+        </Pressable>
+        <Pressable
+          accessibilityLabel="Mở bộ chọn tháng và năm"
+          accessibilityRole="button"
+          onPress={() => setPickerOpen(true)}
+          style={({ pressed }) => [styles.monthCurrent, pressed && styles.monthCurrentPressed]}
+        >
+          <CalendarDays color={colors.primary} size={18} />
+          <View style={styles.monthCurrentCopy}>
+            <Text style={styles.monthCurrentText}>{formatMonthKey(monthKey)}</Text>
+            <Text style={styles.monthCurrentHint}>Chạm để chọn nhanh</Text>
+          </View>
+        </Pressable>
+        <Pressable
+          accessibilityLabel="Xem tháng sau"
+          accessibilityRole="button"
+          onPress={() => onChange(shiftMonthKey(monthKey, 1))}
+          style={({ pressed }) => [styles.monthButton, pressed && styles.pressed]}
+        >
+          <ChevronRight color={colors.primary} size={18} />
+        </Pressable>
       </View>
+
+      {pickerOpen ? (
+        <MonthYearPicker
+          monthKey={monthKey}
+          onChange={(value) => {
+            onChange(value);
+            setPickerOpen(false);
+          }}
+          onClose={() => setPickerOpen(false)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function MonthYearPicker({
+  monthKey,
+  onChange,
+  onClose,
+}: {
+  monthKey: string;
+  onChange: (value: string) => void;
+  onClose: () => void;
+}) {
+  const selected = parseMonthKey(monthKey);
+  const [displayYear, setDisplayYear] = useState(selected.year);
+  const todayKey = getMonthKey();
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [onClose]);
+
+  return (
+    <View accessibilityRole="dialog" style={styles.monthPickerOverlay}>
       <Pressable
+        accessibilityLabel="Đóng bộ chọn tháng"
         accessibilityRole="button"
-        onPress={() => onChange(shiftMonthKey(monthKey, 1))}
-        style={({ pressed }) => [styles.monthButton, pressed && styles.pressed]}
-      >
-        <ChevronRight color={colors.primary} size={18} />
-      </Pressable>
+        onPress={onClose}
+        style={styles.monthPickerBackdrop}
+      />
+      <View style={styles.monthPickerSheet}>
+        <View style={styles.monthPickerHandle} />
+        <View style={styles.monthPickerHeader}>
+          <View style={styles.flex}>
+            <Text style={styles.monthPickerEyebrow}>CHỌN THỜI GIAN</Text>
+            <Text style={styles.monthPickerTitle}>Tháng và năm</Text>
+          </View>
+          <Pressable
+            accessibilityLabel="Đóng bộ chọn tháng"
+            accessibilityRole="button"
+            onPress={onClose}
+            style={({ pressed }) => [styles.accountCloseButton, pressed && styles.pressed]}
+          >
+            <X color={colors.ink} size={19} />
+          </Pressable>
+        </View>
+
+        <View style={styles.monthPickerYearRow}>
+          <Pressable
+            accessibilityLabel="Năm trước"
+            accessibilityRole="button"
+            onPress={() => setDisplayYear((year) => year - 1)}
+            style={({ pressed }) => [styles.monthPickerYearButton, pressed && styles.pressed]}
+          >
+            <ChevronLeft color={colors.primary} size={20} />
+          </Pressable>
+          <View style={styles.monthPickerYearDisplay}>
+            <Text style={styles.monthPickerYearText}>{displayYear}</Text>
+          </View>
+          <Pressable
+            accessibilityLabel="Năm sau"
+            accessibilityRole="button"
+            onPress={() => setDisplayYear((year) => year + 1)}
+            style={({ pressed }) => [styles.monthPickerYearButton, pressed && styles.pressed]}
+          >
+            <ChevronRight color={colors.primary} size={20} />
+          </Pressable>
+        </View>
+
+        <View style={styles.monthPickerGrid}>
+          {Array.from({ length: 12 }, (_, index) => index + 1).map((month) => {
+            const value = `${displayYear}-${String(month).padStart(2, '0')}`;
+            const isSelected = value === monthKey;
+            const isCurrent = value === todayKey;
+            return (
+              <Pressable
+                accessibilityRole="button"
+                key={value}
+                onPress={() => onChange(value)}
+                style={({ pressed }) => [
+                  styles.monthPickerOption,
+                  isCurrent && styles.monthPickerOptionCurrent,
+                  isSelected && styles.monthPickerOptionSelected,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={[styles.monthPickerOptionText, isSelected && styles.monthPickerOptionTextSelected]}>
+                  Tháng {month}
+                </Text>
+                {isCurrent ? <Text style={[styles.monthPickerNowText, isSelected && styles.monthPickerOptionTextSelected]}>Hiện tại</Text> : null}
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => onChange(todayKey)}
+          style={({ pressed }) => [styles.monthPickerTodayButton, pressed && styles.pressed]}
+        >
+          <CalendarCheck2 color={colors.primary} size={18} />
+          <Text style={styles.monthPickerTodayText}>Về tháng hiện tại</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -3851,6 +4131,7 @@ function EmployeeAttendanceScreen({
   branch,
   employeeName,
   monthKey,
+  onCancelPayroll,
   onConfirmPayroll,
   onMonthChange,
   onNameChange,
@@ -3860,6 +4141,7 @@ function EmployeeAttendanceScreen({
   branch: Branch;
   employeeName: string;
   monthKey: string;
+  onCancelPayroll: (employeeName: string) => void;
   onConfirmPayroll: (employeeName: string) => void;
   onMonthChange: (value: string) => void;
   onNameChange: (value: string) => void;
@@ -3891,12 +4173,22 @@ function EmployeeAttendanceScreen({
       />
       <PayrollSummary payroll={payroll} />
       {sheet?.employeeConfirmedAt ? (
-        <StatusPanel
-          icon={CheckCircle2}
-          title="Đã xác nhận bảng lương"
-          text={`Quản lí chi nhánh sẽ nhìn thấy bảng lương này từ ${formatDateTime(sheet.employeeConfirmedAt)}.`}
-          tone="success"
-        />
+        <>
+          <StatusPanel
+            icon={CheckCircle2}
+            title="Đã xác nhận bảng lương"
+            text={`Quản lí chi nhánh sẽ nhìn thấy bảng lương này từ ${formatDateTime(sheet.employeeConfirmedAt)}.`}
+            tone="success"
+          />
+          {isCurrentMonth(monthKey) ? (
+            <PrimaryButton
+              icon={XCircle}
+              label="Mở lại bảng công để chỉnh sửa"
+              onPress={() => onCancelPayroll(trimmedName)}
+              tone="danger"
+            />
+          ) : null}
+        </>
       ) : (
         <PrimaryButton
           icon={CheckCheck}
@@ -3916,6 +4208,7 @@ function ManagerAttendanceScreen({
   employeeName,
   monthKey,
   onCancelBranchPayroll,
+  onCancelEmployeePayroll,
   onConfirmBranchPayroll,
   onConfirmEmployeePayroll,
   onMonthChange,
@@ -3930,6 +4223,7 @@ function ManagerAttendanceScreen({
   employeeName: string;
   monthKey: string;
   onCancelBranchPayroll: () => void;
+  onCancelEmployeePayroll: (employeeName: string) => void;
   onConfirmBranchPayroll: () => void;
   onConfirmEmployeePayroll: (employeeName: string) => void;
   onMonthChange: (value: string) => void;
@@ -3962,7 +4256,16 @@ function ManagerAttendanceScreen({
         sheet={sheet}
       />
       <PayrollSummary payroll={calculatePayroll(sheet)} />
-      {sheet?.employeeConfirmedAt ? null : (
+      {sheet?.employeeConfirmedAt ? (
+        isCurrentMonth(monthKey) ? (
+          <PrimaryButton
+            icon={XCircle}
+            label="Mở lại bảng công quản lí"
+            onPress={() => onCancelEmployeePayroll(employeeName)}
+            tone="danger"
+          />
+        ) : null
+      ) : (
         <PrimaryButton
           icon={CheckCheck}
           label="Xác nhận lương quản lí"
@@ -4033,6 +4336,28 @@ function AttendanceNotice({
   monthKey: string;
   sheet?: AttendanceSheet;
 }) {
+  if (isFutureMonth(monthKey)) {
+    return (
+      <StatusPanel
+        icon={CalendarDays}
+        title="Tháng này chưa bắt đầu"
+        text="Bạn có thể xem trước lịch nhưng chỉ được chấm công khi tháng này bắt đầu."
+        tone="neutral"
+      />
+    );
+  }
+
+  if (isPastMonth(monthKey)) {
+    return (
+      <StatusPanel
+        icon={History}
+        title="Chế độ xem lại"
+        text="Đây là dữ liệu của tháng đã qua. Bảng công được khóa để bảo toàn lịch sử."
+        tone="neutral"
+      />
+    );
+  }
+
   if (sheet?.employeeConfirmedAt) {
     return (
       <StatusPanel
@@ -4040,17 +4365,6 @@ function AttendanceNotice({
         title="Bảng lương đã khóa ở nhân viên"
         text="Sau khi xác nhận, dữ liệu được gửi lên màn hình tổng hợp của quản lí chi nhánh."
         tone="success"
-      />
-    );
-  }
-
-  if (!isCurrentMonth(monthKey)) {
-    return (
-      <StatusPanel
-        icon={CalendarDays}
-        title="Chế độ xem lại"
-        text="Nhân viên chỉ chấm công trong tháng hiện tại; các tháng khác chỉ dùng để xem dữ liệu đã lưu."
-        tone="neutral"
       />
     );
   }
@@ -5658,8 +5972,8 @@ const styles = StyleSheet.create({
   },
   authFieldShell: {
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderColor: colors.lineStrong,
+    backgroundColor: '#F3E4D0',
+    borderColor: '#CDB49A',
     borderRadius: 16,
     borderWidth: 1.5,
     flexDirection: 'row',
@@ -5667,7 +5981,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
   },
   authFieldShellFocused: {
-    backgroundColor: '#FFFEFB',
+    backgroundColor: '#F8ECDD',
     borderColor: colors.primary,
     shadowColor: colors.primary,
     shadowOffset: { width: 0, height: 3 },
@@ -6644,14 +6958,14 @@ const styles = StyleSheet.create({
     minWidth: 50,
   },
   cupEquationInput: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 7,
+    backgroundColor: colors.surfaceTint,
+    borderColor: colors.lineStrong,
+    borderRadius: 10,
     borderWidth: 1,
     color: colors.ink,
     fontSize: 15,
     fontWeight: '900',
-    height: 38,
+    height: 44,
     letterSpacing: 0,
     paddingHorizontal: 6,
     paddingVertical: 0,
@@ -6738,8 +7052,8 @@ const styles = StyleSheet.create({
     color: colors.amber,
   },
   closingCard: {
-    backgroundColor: colors.surface,
-    borderColor: colors.line,
+    backgroundColor: '#F6E8D6',
+    borderColor: colors.lineStrong,
     borderRadius: 14,
     borderWidth: 1,
     gap: 10,
@@ -6777,19 +7091,20 @@ const styles = StyleSheet.create({
     color: colors.rose,
   },
   closingInput: {
-    borderBottomColor: colors.line,
-    borderBottomWidth: 1,
+    backgroundColor: colors.surfaceTint,
+    borderColor: colors.lineStrong,
+    borderRadius: 12,
+    borderWidth: 1,
     color: colors.ink,
     fontSize: 15,
     fontWeight: '700',
     letterSpacing: 0,
-    minHeight: 44,
-    paddingBottom: 5,
-    paddingHorizontal: 0,
-    paddingTop: 0,
+    minHeight: 48,
+    paddingHorizontal: 12,
+    paddingVertical: 0,
   },
   closingInputError: {
-    borderBottomColor: colors.rose,
+    borderColor: colors.rose,
   },
   inputSuffix: {
     color: colors.muted,
@@ -6939,8 +7254,8 @@ const styles = StyleSheet.create({
   },
   inputShell: {
     alignItems: 'center',
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
+    backgroundColor: colors.surfaceTint,
+    borderColor: colors.lineStrong,
     borderRadius: 14,
     borderWidth: 1,
     flexDirection: 'row',
@@ -6977,24 +7292,24 @@ const styles = StyleSheet.create({
   },
   monthNavigator: {
     alignItems: 'center',
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 8,
+    backgroundColor: colors.surfaceTint,
+    borderColor: colors.lineStrong,
+    borderRadius: 16,
     borderWidth: 1,
     flexDirection: 'row',
     gap: 10,
     justifyContent: 'space-between',
-    padding: 8,
+    padding: 7,
   },
   monthButton: {
     alignItems: 'center',
     backgroundColor: colors.surfaceSoft,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
-    height: 38,
+    height: 44,
     justifyContent: 'center',
-    width: 42,
+    width: 44,
   },
   monthCurrent: {
     alignItems: 'center',
@@ -7002,12 +7317,173 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     justifyContent: 'center',
+    minHeight: 46,
+    minWidth: 0,
+    paddingHorizontal: 6,
+  },
+  monthCurrentPressed: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: 12,
+  },
+  monthCurrentCopy: {
+    minWidth: 0,
   },
   monthCurrentText: {
     color: colors.ink,
     fontSize: 15,
     fontWeight: '900',
     letterSpacing: 0,
+    textAlign: 'center',
+  },
+  monthCurrentHint: {
+    color: colors.muted,
+    fontSize: 9,
+    fontWeight: '700',
+    marginTop: 1,
+    textAlign: 'center',
+  },
+  monthPickerOverlay: {
+    bottom: 0,
+    left: 0,
+    position: 'fixed',
+    right: 0,
+    top: 0,
+    zIndex: 1200,
+  },
+  monthPickerBackdrop: {
+    backgroundColor: 'rgba(35, 22, 15, 0.58)',
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    zIndex: 0,
+  },
+  monthPickerSheet: {
+    alignSelf: 'center',
+    backgroundColor: colors.background,
+    borderColor: colors.lineStrong,
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    borderWidth: 1,
+    bottom: 0,
+    gap: 14,
+    maxWidth: 430,
+    paddingBottom: 'calc(18px + env(safe-area-inset-bottom))',
+    paddingHorizontal: 14,
+    paddingTop: 9,
+    position: 'absolute',
+    width: '100%',
+    zIndex: 1,
+  },
+  monthPickerHandle: {
+    alignSelf: 'center',
+    backgroundColor: colors.lineStrong,
+    borderRadius: 999,
+    height: 4,
+    width: 44,
+  },
+  monthPickerHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+  },
+  monthPickerEyebrow: {
+    color: colors.accent,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  monthPickerTitle: {
+    color: colors.ink,
+    fontSize: 22,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  monthPickerYearRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 9,
+  },
+  monthPickerYearButton: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceTint,
+    borderColor: colors.lineStrong,
+    borderRadius: 12,
+    borderWidth: 1,
+    height: 46,
+    justifyContent: 'center',
+    width: 48,
+  },
+  monthPickerYearDisplay: {
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    borderRadius: 13,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 46,
+  },
+  monthPickerYearText: {
+    color: colors.onDark,
+    fontSize: 19,
+    fontWeight: '900',
+  },
+  monthPickerGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 7,
+  },
+  monthPickerOption: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceTint,
+    borderColor: colors.line,
+    borderRadius: 12,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 54,
+    paddingHorizontal: 4,
+    width: 'calc(25% - 6px)',
+  },
+  monthPickerOptionCurrent: {
+    borderColor: colors.accent,
+    borderWidth: 2,
+  },
+  monthPickerOptionSelected: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  monthPickerOptionText: {
+    color: colors.ink,
+    fontSize: 12,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  monthPickerOptionTextSelected: {
+    color: colors.onDark,
+  },
+  monthPickerNowText: {
+    color: colors.accent,
+    fontSize: 8,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  monthPickerTodayButton: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    backgroundColor: colors.primarySoft,
+    borderColor: colors.lineStrong,
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 7,
+    justifyContent: 'center',
+    minHeight: 44,
+    paddingHorizontal: 15,
+  },
+  monthPickerTodayText: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: '900',
   },
   attendanceTable: {
     backgroundColor: colors.surfaceStrong,
@@ -7042,8 +7518,8 @@ const styles = StyleSheet.create({
     flex: 0.9,
   },
   attendanceInput: {
-    backgroundColor: colors.surface,
-    borderColor: colors.line,
+    backgroundColor: '#F1DFC7',
+    borderColor: '#C9A989',
     borderRadius: 10,
     borderWidth: 1,
     color: colors.ink,
@@ -7059,7 +7535,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   attendanceInputReadonly: {
-    backgroundColor: colors.surfaceSoft,
+    backgroundColor: '#E6D9C8',
+    borderColor: colors.line,
     color: colors.muted,
   },
   payrollSummary: {
@@ -7268,16 +7745,16 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   supplyQuantityInput: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 7,
+    backgroundColor: colors.surfaceTint,
+    borderColor: colors.lineStrong,
+    borderRadius: 11,
     borderWidth: 1,
     color: colors.ink,
     flex: 1,
     fontSize: 15,
     fontWeight: '800',
     letterSpacing: 0,
-    minHeight: 42,
+    minHeight: 48,
     paddingHorizontal: 10,
     paddingVertical: 0,
   },

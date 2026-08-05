@@ -109,7 +109,7 @@ svg {
 
 .account-native-field {
   appearance: none;
-  background-color: #fff9f1;
+  background-color: #f1e1cc;
   background-image:
     linear-gradient(45deg, transparent 50%, #5f3723 50%),
     linear-gradient(135deg, #5f3723 50%, transparent 50%);
@@ -137,7 +137,8 @@ input.account-native-field {
 
 .account-native-field:focus {
   border-color: #5f3723;
-  box-shadow: 0 0 0 3px rgba(95, 55, 35, 0.1);
+  background-color: #f7ead9;
+  box-shadow: 0 0 0 3px rgba(95, 55, 35, 0.12);
 }
 
 .account-native-field:disabled {
@@ -169,6 +170,10 @@ input.account-native-field {
 .web-text-input::placeholder {
   color: var(--placeholder-color, #9a806b);
   opacity: 1;
+}
+
+.web-text-input {
+  background-color: transparent;
 }
 
 @media (hover: hover) {
