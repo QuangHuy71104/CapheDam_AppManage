@@ -48,7 +48,15 @@ npm install
 npm run web
 ```
 
-Mở địa chỉ Expo hiển thị trong terminal trên trình duyệt. Nếu điện thoại cùng mạng LAN, có thể mở link LAN hoặc quét QR từ terminal.
+Trên chính máy tính đang chạy dự án, mở `http://localhost:8081`.
+
+Nếu muốn mở từ điện thoại cùng mạng Wi-Fi, chạy:
+
+```bash
+npm run web:lan
+```
+
+Sau đó mở địa chỉ LAN mà Expo hiển thị trong terminal, ví dụ `http://192.168.1.10:8081`. Không dùng `localhost` trên điện thoại vì địa chỉ đó trỏ về chính điện thoại, không phải máy tính đang chạy Expo.
 
 ## Build web/PWA
 
