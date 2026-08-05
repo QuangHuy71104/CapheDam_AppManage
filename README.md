@@ -59,3 +59,12 @@ npm run preview
 Build production nằm trong `dist`. Vercel dùng `npm run build` và tự phục vụ fallback về `index.html` cho web app.
 
 Các tài nguyên PWA trong `public` được Vite sao chép sang `dist`: `manifest.json`, icon 192/512 và `sw.js`.
+
+## Cài lên màn hình chính
+
+Sau khi triển khai bằng HTTPS, ứng dụng mở ở chế độ `standalone` và không còn thanh địa chỉ khi khởi chạy từ biểu tượng:
+
+- Android/Chrome: chọn **Cài ứng dụng** trên thẻ hướng dẫn trong màn hình đăng nhập, hoặc mở menu trình duyệt → **Cài đặt ứng dụng**.
+- iPhone/iPad: mở bằng Safari, nhấn **Chia sẻ** → **Thêm vào MH chính**.
+
+Giao diện khóa theo chiều rộng thiết bị và chỉ cuộn dọc. Các vùng an toàn của màn hình tai thỏ/thanh home, bàn phím ảo và viewport động trên mobile đã được tính trong layout.

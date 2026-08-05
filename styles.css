@@ -6,6 +6,7 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background: #ecdfcd;
 }
 
 * {
@@ -18,21 +19,29 @@ body,
   height: 100%;
   margin: 0;
   max-width: 100%;
-  overflow-x: hidden;
   width: 100%;
+}
+
+html {
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 #root {
   display: flex;
   flex-direction: column;
+  height: 100dvh;
+  isolation: isolate;
   min-height: 0;
   min-width: 0;
-  overflow: hidden;
+  overflow: clip;
 }
 
 body {
   background: #f5ede1;
   overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: pan-y pinch-zoom;
 }
 
 button,
@@ -40,6 +49,8 @@ input,
 textarea {
   color: inherit;
   font: inherit;
+  max-width: 100%;
+  min-width: 0;
 }
 
 button {
@@ -49,6 +60,7 @@ button {
   margin: 0;
   padding: 0;
   -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 button:disabled {
@@ -68,6 +80,27 @@ textarea {
 img {
   display: block;
   max-width: 100%;
+}
+
+svg {
+  flex-shrink: 0;
+}
+
+.app-frame,
+.app-shell,
+.app-scroll-surface {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: clip;
+}
+
+.app-shell {
+  contain: inline-size;
+}
+
+.app-scroll-surface {
+  overscroll-behavior: contain;
+  touch-action: pan-y pinch-zoom;
 }
 
 .web-safe-area {
@@ -98,6 +131,21 @@ img {
 @media (hover: hover) {
   button:not(:disabled):hover {
     filter: brightness(1.03);
+  }
+}
+
+/* iOS zooms the visual viewport when focusing controls below 16px. Keeping
+   mobile inputs at 16px prevents that zoom/pan state and preserves app bounds. */
+@media (max-width: 767px) {
+  input,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+@media (display-mode: standalone) {
+  .app-install-card {
+    display: none !important;
   }
 }
 

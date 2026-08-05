@@ -151,7 +151,14 @@ export const View = forwardRef<HTMLDivElement, ViewProps>(function View(
       aria-selected={accessibilityState?.selected}
       ref={ref}
       role={accessibilityRole}
-      style={{ display: 'flex', flexDirection: 'column', ...flattenStyle(style), pointerEvents }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        maxWidth: '100%',
+        minWidth: 0,
+        ...flattenStyle(style),
+        pointerEvents,
+      }}
     >
       {children}
     </div>
@@ -184,7 +191,14 @@ export function Text({ accessibilityLabel, accessibilityRole, children, numberOf
         {...props}
         aria-label={accessibilityLabel}
         role={accessibilityRole}
-        style={{ display: nested ? 'inline' : 'block', ...flattenStyle(style), ...lineClampStyle }}
+        style={{
+          display: nested ? 'inline' : 'block',
+          maxWidth: '100%',
+          minWidth: 0,
+          overflowWrap: 'anywhere',
+          ...flattenStyle(style),
+          ...lineClampStyle,
+        }}
       >
         {children}
       </span>
@@ -227,7 +241,13 @@ export function Pressable({
       onTouchEnd={() => setPressed(false)}
       onTouchStart={() => setPressed(true)}
       role={accessibilityRole}
-      style={{ display: 'flex', flexDirection: 'column', ...flattenStyle(resolvedStyle) }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        maxWidth: '100%',
+        minWidth: 0,
+        ...flattenStyle(resolvedStyle),
+      }}
       type="button"
     >
       {children}
@@ -335,6 +355,8 @@ export const TextInput = forwardRef<TextInput, TextInputProps>(function TextInpu
     },
     placeholder,
     style: {
+      maxWidth: '100%',
+      minWidth: 0,
       ...flattenStyle(style),
       '--placeholder-color': placeholderTextColor,
       caretColor: selectionColor,
@@ -355,7 +377,13 @@ type ImageProps = AccessibilityProps & {
 };
 
 export function Image({ accessibilityLabel, source, style }: ImageProps) {
-  return <img alt={accessibilityLabel ?? ''} src={typeof source === 'string' ? source : source.uri} style={flattenStyle(style)} />;
+  return (
+    <img
+      alt={accessibilityLabel ?? ''}
+      src={typeof source === 'string' ? source : source.uri}
+      style={{ maxWidth: '100%', minWidth: 0, ...flattenStyle(style) }}
+    />
+  );
 }
 
 export type ScrollView = {
@@ -364,6 +392,7 @@ export type ScrollView = {
 
 type ScrollViewProps = {
   children?: ReactNode;
+  className?: string;
   contentContainerStyle?: StyleValue;
   keyboardShouldPersistTaps?: string;
   showsVerticalScrollIndicator?: boolean;
@@ -373,6 +402,7 @@ type ScrollViewProps = {
 export const ScrollView = forwardRef<ScrollView, ScrollViewProps>(function ScrollView(
   {
     children,
+    className,
     contentContainerStyle,
     keyboardShouldPersistTaps: _keyboardShouldPersistTaps,
     showsVerticalScrollIndicator = true,
@@ -390,21 +420,39 @@ export const ScrollView = forwardRef<ScrollView, ScrollViewProps>(function Scrol
 
   return (
     <div
-      className={showsVerticalScrollIndicator ? undefined : 'web-scroll-view web-scroll-view-hidden'}
+      className={[
+        'web-scroll-view',
+        !showsVerticalScrollIndicator && 'web-scroll-view-hidden',
+        className,
+      ]
+        .filter(Boolean)
+        .join(' ')}
       ref={elementRef}
       style={{
         flex: '1 1 0',
         minHeight: 0,
-        minWidth: 0,
-        overflowX: 'hidden',
         overflowY: 'auto',
         WebkitOverflowScrolling: 'touch',
         width: '100%',
         ...flattenStyle(style),
+        // A screen may customize vertical scrolling, but horizontal movement is
+        // never valid in this mobile-first application.
+        maxWidth: '100%',
+        minWidth: 0,
+        overscrollBehaviorX: 'none',
+        overflowX: 'hidden',
+        touchAction: 'pan-y pinch-zoom',
       }}
     >
       <div
-        style={{ display: 'flex', flexDirection: 'column', minWidth: 0, ...flattenStyle(contentContainerStyle) }}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          maxWidth: '100%',
+          minWidth: 0,
+          width: '100%',
+          ...flattenStyle(contentContainerStyle),
+        }}
       >
         {children}
       </div>

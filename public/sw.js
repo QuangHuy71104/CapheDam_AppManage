@@ -1,4 +1,4 @@
-const CACHE_NAME = 'caphe-dam-web-v2';
+const CACHE_NAME = 'caphe-dam-web-v3';
 const APP_SHELL = ['/', '/manifest.json', '/pwa-192.png', '/pwa-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -27,13 +27,38 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            void caches.open(CACHE_NAME).then((cache) => cache.put('/', copy));
+          }
+          return response;
+        })
+        .catch(() => caches.match(request).then((cached) => cached || caches.match('/'))),
+    );
+    return;
+  }
+
   event.respondWith(
-    fetch(request)
-      .then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+    caches.match(request).then((cached) => {
+      const networkResponse = fetch(request).then((response) => {
+        if (response.ok) {
+          const copy = response.clone();
+          void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+        }
         return response;
-      })
-      .catch(() => caches.match(request).then((cached) => cached || caches.match('/'))),
+      });
+
+      return cached || networkResponse;
+    }),
   );
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });

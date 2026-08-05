@@ -29,6 +29,7 @@ import {
   ClipboardList,
   Clock3,
   DoorClosed,
+  Download,
   Eye,
   EyeOff,
   History,
@@ -38,6 +39,7 @@ import {
   RefreshCcw,
   Save,
   ShieldCheck,
+  Smartphone,
   Store,
   UserCog,
   UserRound,
@@ -57,6 +59,10 @@ type AuthFeedback = {
   tone: 'success' | 'error' | 'info';
   title: string;
   message: string;
+};
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 };
 type AttendanceType = 'clockIn' | 'clockOut';
 type CupBalanceStatus = 'enough' | 'short' | 'over';
@@ -1994,12 +2000,12 @@ export default function App() {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView className="app-frame" style={styles.safeArea}>
       <StatusBar backgroundColor={colors.background} style="dark" />
       <KeyboardAvoidingView
         style={styles.keyboardView}
       >
-        <View style={styles.shell}>
+        <View className="app-shell" style={styles.shell}>
           <View style={styles.header}>
             <View style={styles.brandLockup}>
               <View style={styles.brandMark}>
@@ -2022,64 +2028,43 @@ export default function App() {
             ) : null}
           </View>
 
-          {authFeedback?.tone === 'success' ? (
-            <AuthFeedbackBanner feedback={authFeedback} onDismiss={() => setAuthFeedback(null)} />
-          ) : null}
-
-          <AccountContextBar
-            authEmail={session.user.email ?? profile.email}
-            branchId={selectedBranchId}
-            profile={profile}
-            syncing={syncingRemote}
-            onSignOut={signOut}
-          />
-
-          <View style={styles.metricsRow}>
-            <MetricTile
-              icon={CalendarCheck2}
-              label={currentRole === 'owner' ? 'Đã nhận lương' : currentRole === 'manager' ? 'NV đã gửi' : 'Giờ tháng'}
-              value={formatNumber(attendanceMetric)}
-              tone="teal"
-            />
-            <MetricTile icon={Beef} label="Báo đồ" value={ingredientMetric.toString()} tone="amber" />
-            <MetricTile
-              icon={currentRole === 'owner' ? Building2 : WalletCards}
-              label={currentRole === 'owner' ? 'Chi nhánh' : 'Báo ca'}
-              value={closingMetric.toString()}
-              tone="blue"
-            />
-          </View>
-
-          <View style={styles.tabs}>
-            {tabItems.map((item) => {
-              const Icon = item.icon;
-              const selected = activeTab === item.key;
-
-              return (
-                <Pressable
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected }}
-                  key={item.key}
-                  onPress={() => setActiveTab(item.key)}
-                  style={({ pressed }) => [
-                    styles.tab,
-                    selected && styles.tabActive,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Icon color={selected ? colors.onDark : colors.muted} size={18} />
-                  <Text style={[styles.tabText, selected && styles.tabTextActive]}>{item.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
           <ScrollView
+            className="app-scroll-surface"
             ref={contentScrollRef}
             contentContainerStyle={styles.content}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
+            <InstallAppBanner />
+
+            {authFeedback?.tone === 'success' ? (
+              <AuthFeedbackBanner feedback={authFeedback} onDismiss={() => setAuthFeedback(null)} />
+            ) : null}
+
+            <AccountContextBar
+              authEmail={session.user.email ?? profile.email}
+              branchId={selectedBranchId}
+              profile={profile}
+              syncing={syncingRemote}
+              onSignOut={signOut}
+            />
+
+            <View style={styles.metricsRow}>
+              <MetricTile
+                icon={CalendarCheck2}
+                label={currentRole === 'owner' ? 'Đã nhận lương' : currentRole === 'manager' ? 'NV đã gửi' : 'Giờ tháng'}
+                value={formatNumber(attendanceMetric)}
+                tone="teal"
+              />
+              <MetricTile icon={Beef} label="Báo đồ" value={ingredientMetric.toString()} tone="amber" />
+              <MetricTile
+                icon={currentRole === 'owner' ? Building2 : WalletCards}
+                label={currentRole === 'owner' ? 'Chi nhánh' : 'Báo ca'}
+                value={closingMetric.toString()}
+                tone="blue"
+              />
+            </View>
+
             {activeTab === 'attendance' && (
               currentRole === 'manager' ? (
                 <ManagerAttendanceScreen
@@ -2197,6 +2182,31 @@ export default function App() {
               />
             )}
           </ScrollView>
+
+          <View accessibilityRole="tablist" style={styles.tabs}>
+            {tabItems.map((item) => {
+              const Icon = item.icon;
+              const selected = activeTab === item.key;
+
+              return (
+                <Pressable
+                  accessibilityLabel={item.label}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected }}
+                  key={item.key}
+                  onPress={() => setActiveTab(item.key)}
+                  style={({ pressed }) => [
+                    styles.tab,
+                    selected && styles.tabActive,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Icon color={selected ? colors.onDark : colors.muted} size={20} />
+                  <Text numberOfLines={1} style={[styles.tabText, selected && styles.tabTextActive]}>{item.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
 
           {pendingClosingExport ? (
             <View pointerEvents="none" style={styles.exportStage}>
@@ -2465,6 +2475,8 @@ function AuthScreen({
                 </View>
               </View>
 
+              <InstallAppBanner />
+
               {feedback ? <AuthFeedbackBanner feedback={feedback} onDismiss={() => onAuthFeedbackChange(null)} /> : null}
 
               <View style={styles.authFields}>
@@ -2701,6 +2713,108 @@ function AuthFeedbackBanner({ feedback, onDismiss }: { feedback: AuthFeedback; o
         accessibilityRole="button"
         onPress={onDismiss}
         style={({ pressed }) => [styles.authFeedbackDismiss, pressed && styles.pressed]}
+      >
+        <X color={colors.muted} size={17} />
+      </Pressable>
+    </View>
+  );
+}
+
+function InstallAppBanner() {
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [installed, setInstalled] = useState(() => {
+    const navigatorWithStandalone = navigator as Navigator & { standalone?: boolean };
+    return window.matchMedia('(display-mode: standalone)').matches || navigatorWithStandalone.standalone === true;
+  });
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return window.sessionStorage.getItem('caphedam-install-dismissed') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const isIos =
+    /iPad|iPhone|iPod/i.test(navigator.userAgent) ||
+    (navigator.userAgent.includes('Macintosh') && navigator.maxTouchPoints > 1);
+
+  useEffect(() => {
+    const displayMode = window.matchMedia('(display-mode: standalone)');
+    const handleInstallAvailable = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+    const handleInstalled = () => {
+      setInstalled(true);
+      setInstallPrompt(null);
+    };
+    const handleDisplayModeChange = () => setInstalled(displayMode.matches);
+
+    window.addEventListener('beforeinstallprompt', handleInstallAvailable);
+    window.addEventListener('appinstalled', handleInstalled);
+    displayMode.addEventListener?.('change', handleDisplayModeChange);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleInstallAvailable);
+      window.removeEventListener('appinstalled', handleInstalled);
+      displayMode.removeEventListener?.('change', handleDisplayModeChange);
+    };
+  }, []);
+
+  if (installed || dismissed || (!installPrompt && !isIos)) {
+    return null;
+  }
+
+  const dismiss = () => {
+    setDismissed(true);
+    try {
+      window.sessionStorage.setItem('caphedam-install-dismissed', '1');
+    } catch {
+      // Private browsing may not expose storage; dismissing still works for the current render.
+    }
+  };
+
+  const requestInstall = async () => {
+    if (!installPrompt) {
+      return;
+    }
+
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    setInstallPrompt(null);
+
+    if (choice.outcome === 'accepted') {
+      setInstalled(true);
+    }
+  };
+
+  return (
+    <View className="app-install-card" style={styles.installCard}>
+      <View style={styles.installIcon}>
+        <Smartphone color={colors.primary} size={21} />
+      </View>
+      <View style={styles.installCopy}>
+        <Text style={styles.installTitle}>Cài Cà phê Đạm</Text>
+        <Text style={styles.installText}>
+          {installPrompt
+            ? 'Thêm vào màn hình chính để mở toàn màn hình như một ứng dụng.'
+            : 'Trên iPhone/iPad: nhấn Chia sẻ, rồi chọn “Thêm vào MH chính”.'}
+        </Text>
+        {installPrompt ? (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void requestInstall()}
+            style={({ pressed }) => [styles.installButton, pressed && styles.pressed]}
+          >
+            <Download color={colors.onDark} size={16} />
+            <Text style={styles.installButtonText}>Cài ứng dụng</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      <Pressable
+        accessibilityLabel="Ẩn hướng dẫn cài ứng dụng"
+        accessibilityRole="button"
+        onPress={dismiss}
+        style={({ pressed }) => [styles.installDismiss, pressed && styles.pressed]}
       >
         <X color={colors.muted} size={17} />
       </Pressable>
@@ -4175,7 +4289,7 @@ function SectionTitle({
       <View style={styles.sectionIcon}>
         <Icon color={colors.primary} size={21} />
       </View>
-      <View>
+      <View style={styles.sectionCopy}>
         <Text style={styles.sectionTitle}>{title}</Text>
         {subtitle ? <Text style={styles.sectionSubtitle}>{subtitle}</Text> : null}
       </View>
@@ -4457,7 +4571,7 @@ function isToday(value: string) {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: colors.background,
+    backgroundColor: colors.canvasDeep,
   },
   authSafeArea: {
     backgroundColor: '#2D160F',
@@ -4466,23 +4580,32 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   shell: {
+    alignSelf: 'center',
     flex: 1,
     backgroundColor: colors.background,
-    paddingHorizontal: 14,
-    paddingTop: 10,
+    maxWidth: 760,
+    minWidth: 0,
+    overflow: 'hidden',
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    shadowColor: colors.deep,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.09,
+    shadowRadius: 28,
+    width: '100%',
   },
   header: {
     alignItems: 'center',
     backgroundColor: 'rgba(255, 252, 247, 0.94)',
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 18,
     borderWidth: 1,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 14,
-    minHeight: 82,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    marginBottom: 8,
+    minHeight: 64,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     shadowColor: colors.deep,
     shadowOffset: { width: 0, height: 12 },
     shadowOpacity: 0.1,
@@ -4500,9 +4623,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.surfaceStrong,
     borderColor: colors.lineStrong,
-    borderRadius: 8,
+    borderRadius: 13,
     borderWidth: 1,
-    height: 56,
+    height: 46,
     justifyContent: 'center',
     overflow: 'hidden',
     padding: 3,
@@ -4510,10 +4633,10 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.12,
     shadowRadius: 14,
-    width: 56,
+    width: 46,
   },
   brandLogo: {
-    borderRadius: 6,
+    borderRadius: 10,
     height: '100%',
     resizeMode: 'cover',
     width: '100%',
@@ -4524,24 +4647,24 @@ const styles = StyleSheet.create({
   },
   brandScript: {
     color: colors.accent,
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '900',
     letterSpacing: 0,
-    lineHeight: 15,
+    lineHeight: 13,
   },
   appName: {
     color: colors.gold,
-    fontSize: 28,
+    fontSize: 21,
     fontWeight: '900',
     letterSpacing: 0,
-    lineHeight: 30,
+    lineHeight: 23,
     textShadowColor: colors.primary,
     textShadowOffset: { width: 1, height: 1 },
     textShadowRadius: 0,
   },
   appSubtitle: {
     color: colors.muted,
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '700',
     letterSpacing: 0,
     marginTop: 3,
@@ -4552,13 +4675,13 @@ const styles = StyleSheet.create({
     borderColor: colors.lineStrong,
     borderRadius: 999,
     borderWidth: 1,
-    height: 42,
+    height: 44,
     justifyContent: 'center',
     shadowColor: colors.deep,
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.08,
     shadowRadius: 12,
-    width: 42,
+    width: 44,
   },
   pressed: {
     opacity: 0.72,
@@ -4624,7 +4747,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     height: 280,
     position: 'absolute',
-    right: -116,
+    right: 0,
     top: -118,
     width: 280,
   },
@@ -4634,7 +4757,7 @@ const styles = StyleSheet.create({
     bottom: 24,
     height: 144,
     position: 'absolute',
-    right: -50,
+    right: 10,
     width: 144,
   },
   authBrandRow: {
@@ -4987,6 +5110,65 @@ const styles = StyleSheet.create({
     marginTop: -4,
     width: 26,
   },
+  installCard: {
+    alignItems: 'flex-start',
+    backgroundColor: colors.blueSoft,
+    borderColor: 'rgba(97, 112, 85, 0.25)',
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 10,
+    padding: 12,
+  },
+  installIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceStrong,
+    borderRadius: 12,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
+  installCopy: {
+    flex: 1,
+    gap: 4,
+    minWidth: 0,
+  },
+  installTitle: {
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  installText: {
+    color: '#485641',
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 17,
+  },
+  installButton: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: colors.primary,
+    borderRadius: 999,
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
+    marginTop: 5,
+    minHeight: 40,
+    paddingHorizontal: 13,
+  },
+  installButtonText: {
+    color: colors.onDark,
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  installDismiss: {
+    alignItems: 'center',
+    height: 36,
+    justifyContent: 'center',
+    marginRight: -7,
+    marginTop: -7,
+    width: 36,
+  },
   authFooter: {
     color: 'rgba(255, 248, 238, 0.58)',
     fontSize: 11,
@@ -5053,11 +5235,12 @@ const styles = StyleSheet.create({
   },
   accountDetails: {
     flex: 1,
-    minWidth: 170,
+    minWidth: 0,
   },
   accountActions: {
     alignItems: 'center',
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 6,
   },
   accountIcon: {
@@ -5150,6 +5333,7 @@ const styles = StyleSheet.create({
   },
   passwordActionRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
     justifyContent: 'flex-end',
   },
@@ -5191,10 +5375,9 @@ const styles = StyleSheet.create({
   contextPanel: {
     backgroundColor: colors.surfaceStrong,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 18,
     borderWidth: 1,
     gap: 10,
-    marginBottom: 12,
     padding: 12,
     shadowColor: colors.deep,
     shadowOffset: { width: 0, height: 10 },
@@ -5254,12 +5437,12 @@ const styles = StyleSheet.create({
   branchPill: {
     backgroundColor: colors.surface,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 14,
     borderWidth: 1,
     minHeight: 54,
     paddingHorizontal: 10,
     paddingVertical: 8,
-    width: '48%',
+    width: 'calc(50% - 4px)',
   },
   branchPillActive: {
     backgroundColor: colors.primary,
@@ -5287,13 +5470,14 @@ const styles = StyleSheet.create({
   metricsRow: {
     flexDirection: 'row',
     gap: 8,
-    marginBottom: 12,
+    minWidth: 0,
   },
   metricTile: {
     backgroundColor: colors.surfaceStrong,
-    borderRadius: 8,
+    borderRadius: 16,
     borderWidth: 1,
     flex: 1,
+    minWidth: 0,
     minHeight: 92,
     overflow: 'hidden',
     padding: 10,
@@ -5312,7 +5496,7 @@ const styles = StyleSheet.create({
   },
   metricIcon: {
     alignItems: 'center',
-    borderRadius: 8,
+    borderRadius: 10,
     height: 32,
     justifyContent: 'center',
     marginBottom: 8,
@@ -5326,30 +5510,36 @@ const styles = StyleSheet.create({
   },
   metricLabel: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
     letterSpacing: 0,
     marginTop: 2,
   },
   tabs: {
-    backgroundColor: colors.surfaceSoft,
+    backgroundColor: 'rgba(255, 252, 247, 0.97)',
     borderColor: colors.line,
-    borderRadius: 999,
+    borderRadius: 20,
     borderWidth: 1,
     flexDirection: 'row',
     gap: 4,
-    marginBottom: 12,
-    padding: 4,
+    marginBottom: 8,
+    marginTop: 8,
+    padding: 5,
+    shadowColor: colors.deep,
+    shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.1,
+    shadowRadius: 18,
+    elevation: 4,
   },
   tab: {
     alignItems: 'center',
-    borderRadius: 999,
+    borderRadius: 15,
     flex: 1,
-    flexDirection: 'row',
-    gap: 6,
+    gap: 3,
     justifyContent: 'center',
-    minHeight: 44,
-    paddingHorizontal: 8,
+    minHeight: 56,
+    minWidth: 0,
+    paddingHorizontal: 5,
   },
   tabActive: {
     backgroundColor: colors.primary,
@@ -5360,7 +5550,7 @@ const styles = StyleSheet.create({
   },
   tabText: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0,
   },
@@ -5368,7 +5558,8 @@ const styles = StyleSheet.create({
     color: colors.onDark,
   },
   content: {
-    paddingBottom: 28,
+    gap: 12,
+    paddingBottom: 16,
   },
   screen: {
     gap: 14,
@@ -5379,7 +5570,7 @@ const styles = StyleSheet.create({
   closingSection: {
     backgroundColor: colors.surfaceStrong,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 16,
     borderWidth: 1,
     gap: 10,
     padding: 12,
@@ -5402,7 +5593,7 @@ const styles = StyleSheet.create({
   plasticCupSection: {
     backgroundColor: colors.surfaceStrong,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 16,
     borderWidth: 1,
     gap: 12,
     padding: 12,
@@ -5427,7 +5618,7 @@ const styles = StyleSheet.create({
   cupEntry: {
     backgroundColor: colors.surface,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 14,
     borderWidth: 1,
     gap: 8,
     padding: 10,
@@ -5542,7 +5733,7 @@ const styles = StyleSheet.create({
   closingCard: {
     backgroundColor: colors.surface,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 14,
     borderWidth: 1,
     gap: 10,
     minHeight: 96,
@@ -5656,6 +5847,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
   },
+  sectionCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
   sectionIcon: {
     alignItems: 'center',
     backgroundColor: colors.primarySoft,
@@ -5683,7 +5878,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderColor: colors.line,
     borderWidth: 1,
-    borderRadius: 8,
+    borderRadius: 16,
     flexDirection: 'row',
     gap: 12,
     padding: 14,
@@ -5739,7 +5934,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.surfaceStrong,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 14,
     borderWidth: 1,
     flexDirection: 'row',
     gap: 9,
@@ -5810,7 +6005,7 @@ const styles = StyleSheet.create({
   attendanceTable: {
     backgroundColor: colors.surfaceStrong,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 16,
     borderWidth: 1,
     overflow: 'hidden',
   },
@@ -5842,7 +6037,7 @@ const styles = StyleSheet.create({
   attendanceInput: {
     backgroundColor: colors.surface,
     borderColor: colors.line,
-    borderRadius: 7,
+    borderRadius: 10,
     borderWidth: 1,
     color: colors.ink,
     flex: 1,
@@ -5850,7 +6045,8 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0,
     marginHorizontal: 5,
-    minHeight: 34,
+    minHeight: 42,
+    minWidth: 0,
     paddingHorizontal: 7,
     paddingVertical: 0,
     textAlign: 'center',
@@ -5862,7 +6058,7 @@ const styles = StyleSheet.create({
   payrollSummary: {
     backgroundColor: colors.surfaceStrong,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 16,
     borderWidth: 1,
     overflow: 'hidden',
   },
@@ -5915,7 +6111,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.surfaceStrong,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 16,
     borderWidth: 1,
     flexDirection: 'row',
     gap: 10,
@@ -6017,7 +6213,7 @@ const styles = StyleSheet.create({
   supplySection: {
     backgroundColor: colors.surfaceStrong,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 16,
     borderWidth: 1,
     gap: 9,
     padding: 12,
@@ -6036,7 +6232,7 @@ const styles = StyleSheet.create({
   supplyItemRow: {
     backgroundColor: colors.surface,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 14,
     borderWidth: 1,
     gap: 9,
     padding: 10,
@@ -6201,7 +6397,7 @@ const styles = StyleSheet.create({
   history: {
     backgroundColor: colors.surfaceStrong,
     borderColor: colors.line,
-    borderRadius: 8,
+    borderRadius: 16,
     borderWidth: 1,
     marginTop: 2,
     overflow: 'hidden',
