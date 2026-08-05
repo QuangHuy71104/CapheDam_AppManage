@@ -16,12 +16,16 @@ type UserRole = 'owner' | 'manager' | 'employee';
 type EmploymentType = 'full_time' | 'part_time';
 
 type ProfileRow = {
+  avatar_url: string;
   branch_id: string | null;
   created_at: string;
   email: string;
+  employment_type: EmploymentType;
   full_name: string;
   id: string;
+  phone: string;
   role: UserRole;
+  start_date: string;
 };
 
 type AccountProfile = {
@@ -38,6 +42,7 @@ type AccountProfile = {
 
 const validRoles: UserRole[] = ['owner', 'manager', 'employee'];
 const validEmploymentTypes: EmploymentType[] = ['full_time', 'part_time'];
+const profileFields = 'id,email,full_name,role,branch_id,phone,avatar_url,employment_type,start_date,created_at';
 
 const send = (response: VercelResponse, status: number, body: Record<string, unknown>) =>
   response.status(status).json(body);
@@ -56,6 +61,8 @@ const toAccountProfile = (row: ProfileRow, user?: User | null): AccountProfile =
   const role = validRoles.includes(row.role) ? row.role : 'employee';
   const employmentType = validEmploymentTypes.includes(metadata.employmentType as EmploymentType)
     ? (metadata.employmentType as EmploymentType)
+    : validEmploymentTypes.includes(row.employment_type)
+      ? row.employment_type
     : role === 'owner'
       ? 'full_time'
       : 'part_time';
@@ -67,12 +74,12 @@ const toAccountProfile = (row: ProfileRow, user?: User | null): AccountProfile =
     fullName: getText(metadata.fullName) || row.full_name,
     role,
     branchId: role === 'owner' ? null : row.branch_id,
-    phone: getText(metadata.phone),
-    avatarUrl: getText(metadata.avatarUrl),
+    phone: getText(metadata.phone) || row.phone,
+    avatarUrl: getText(metadata.avatarUrl) || row.avatar_url,
     employmentType,
     startDate: /^\d{4}-\d{2}-\d{2}$/.test(metadataStartDate)
       ? metadataStartDate
-      : row.created_at.slice(0, 10),
+      : row.start_date || row.created_at.slice(0, 10),
   };
 };
 
@@ -105,7 +112,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
 
   const { data: requesterRow, error: requesterError } = await admin
     .from('profiles')
-    .select('id,email,full_name,role,branch_id,created_at')
+    .select(profileFields)
     .eq('id', userData.user.id)
     .single();
 
@@ -122,7 +129,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
 
     const { data: profileRows, error: profilesError } = await admin
       .from('profiles')
-      .select('id,email,full_name,role,branch_id,created_at')
+      .select(profileFields)
       .order('full_name');
     if (profilesError) {
       return send(response, 500, { message: 'Chưa tải được danh sách nhân viên. Vui lòng thử lại.' });
@@ -170,9 +177,14 @@ export default async function handler(request: VercelRequest, response: VercelRe
 
     const { data: updatedRow, error: profileError } = await admin
       .from('profiles')
-      .update({ full_name: fullName, updated_at: new Date().toISOString() })
+      .update({
+        avatar_url: avatarUrl,
+        full_name: fullName,
+        phone,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', userData.user.id)
-      .select('id,email,full_name,role,branch_id,created_at')
+      .select(profileFields)
       .single();
     if (profileError || !updatedRow) {
       return send(response, 500, { message: 'Chưa lưu được tên mới. Vui lòng thử lại.' });
@@ -212,9 +224,15 @@ export default async function handler(request: VercelRequest, response: VercelRe
 
     const { data: updatedRow, error: profileError } = await admin
       .from('profiles')
-      .update({ branch_id: branchId, role, updated_at: new Date().toISOString() })
+      .update({
+        branch_id: branchId,
+        employment_type: employmentType,
+        role,
+        start_date: startDate,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', targetId)
-      .select('id,email,full_name,role,branch_id,created_at')
+      .select(profileFields)
       .single();
     if (profileError || !updatedRow) {
       return send(response, 500, { message: 'Chưa lưu được chức vụ hoặc nơi làm việc. Vui lòng thử lại.' });
@@ -280,6 +298,14 @@ export default async function handler(request: VercelRequest, response: VercelRe
     });
     if (authError) {
       return send(response, 500, { message: 'Ảnh đã tải lên nhưng chưa gắn vào tài khoản. Vui lòng thử lại.' });
+    }
+
+    const { error: profileError } = await admin
+      .from('profiles')
+      .update({ avatar_url: avatarUrl, updated_at: new Date().toISOString() })
+      .eq('id', userData.user.id);
+    if (profileError) {
+      return send(response, 500, { message: 'Ảnh đã lưu nhưng chưa hiện trong hồ sơ. Vui lòng thử lại.' });
     }
 
     return send(response, 200, { avatarUrl });
