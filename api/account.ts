@@ -19,6 +19,7 @@ type ProfileRow = {
   avatar_url: string;
   branch_id: string | null;
   created_at: string;
+  date_of_birth: string | null;
   email: string;
   employment_type: EmploymentType;
   full_name: string;
@@ -31,6 +32,7 @@ type ProfileRow = {
 type AccountProfile = {
   avatarUrl: string;
   branchId: string | null;
+  dateOfBirth: string;
   email: string;
   employmentType: EmploymentType;
   fullName: string;
@@ -40,14 +42,39 @@ type AccountProfile = {
   startDate: string;
 };
 
+type StaffBranchAliasRow = {
+  branch_id: string;
+  display_name: string;
+  employee_id: string;
+  manager_id: string;
+  updated_at: string;
+};
+
+type StaffBranchAlias = {
+  branchId: string;
+  displayName: string;
+  employeeId: string;
+  managerId: string;
+  updatedAt: string;
+};
+
 const validRoles: UserRole[] = ['owner', 'manager', 'employee'];
 const validEmploymentTypes: EmploymentType[] = ['full_time', 'part_time'];
-const profileFields = 'id,email,full_name,role,branch_id,phone,avatar_url,employment_type,start_date,created_at';
+const profileFields = 'id,email,full_name,role,branch_id,phone,avatar_url,employment_type,start_date,date_of_birth,created_at';
 
 const send = (response: VercelResponse, status: number, body: Record<string, unknown>) =>
   response.status(status).json(body);
 
 const getText = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+
+const isValidDateOnly = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+};
 
 const getBearerToken = (request: VercelRequest) => {
   const authorization = request.headers.authorization;
@@ -67,6 +94,7 @@ const toAccountProfile = (row: ProfileRow, user?: User | null): AccountProfile =
       ? 'full_time'
       : 'part_time';
   const metadataStartDate = getText(metadata.startDate);
+  const metadataDateOfBirth = getText(metadata.dateOfBirth);
 
   return {
     id: row.id,
@@ -77,6 +105,11 @@ const toAccountProfile = (row: ProfileRow, user?: User | null): AccountProfile =
     phone: getText(metadata.phone) || row.phone,
     avatarUrl: getText(metadata.avatarUrl) || row.avatar_url,
     employmentType,
+    dateOfBirth: isValidDateOnly(metadataDateOfBirth)
+      ? metadataDateOfBirth
+      : isValidDateOnly(row.date_of_birth ?? '')
+        ? row.date_of_birth!
+        : '',
     startDate: /^\d{4}-\d{2}-\d{2}$/.test(metadataStartDate)
       ? metadataStartDate
       : row.start_date || row.created_at.slice(0, 10),
@@ -123,31 +156,54 @@ export default async function handler(request: VercelRequest, response: VercelRe
   const requester = requesterRow as ProfileRow;
 
   if (request.method === 'GET') {
-    if (requester.role !== 'owner') {
+    if (requester.role !== 'owner' && requester.role !== 'manager') {
       return send(response, 403, { message: 'Chỉ Chủ cửa hàng mới được xem danh sách nhân viên.' });
     }
 
-    const { data: profileRows, error: profilesError } = await admin
-      .from('profiles')
-      .select(profileFields)
-      .order('full_name');
+    if (requester.role === 'manager' && !requester.branch_id) {
+      return send(response, 403, { message: 'Tài khoản quản lí chưa được gán chi nhánh.' });
+    }
+
+    const profilesRequest = requester.role === 'manager'
+      ? admin
+          .from('profiles')
+          .select(profileFields)
+          .eq('branch_id', requester.branch_id!)
+          .order('full_name')
+      : admin
+          .from('profiles')
+          .select(profileFields)
+          .order('full_name');
+    const { data: profileRows, error: profilesError } = await profilesRequest;
     if (profilesError) {
       return send(response, 500, { message: 'Chưa tải được danh sách nhân viên. Vui lòng thử lại.' });
     }
 
-    const users: User[] = [];
-    for (let page = 1; page <= 20; page += 1) {
-      const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 100 });
-      if (error) {
-        return send(response, 500, { message: 'Chưa tải được thông tin nhân viên. Vui lòng thử lại.' });
+    // Roster data comes from the canonical profile row. Listing every Auth
+    // user on each HR/schedule open is both expensive and can surface stale
+    // user_metadata instead of the employee's configured display name.
+    const profiles = (profileRows as ProfileRow[]).map((row) => toAccountProfile(row));
+    let aliases: StaffBranchAlias[] = [];
+
+    if (requester.role === 'manager') {
+      const { data: aliasRows, error: aliasesError } = await admin
+        .from('staff_branch_aliases')
+        .select('manager_id,employee_id,branch_id,display_name,updated_at')
+        .eq('manager_id', requester.id)
+        .eq('branch_id', requester.branch_id!);
+      if (aliasesError) {
+        return send(response, 500, { message: 'Chưa tải được tên xếp lịch của nhân sự.' });
       }
-      users.push(...data.users);
-      if (data.users.length < 100) break;
+      aliases = (aliasRows as StaffBranchAliasRow[]).map((row) => ({
+        managerId: row.manager_id,
+        employeeId: row.employee_id,
+        branchId: row.branch_id,
+        displayName: row.display_name,
+        updatedAt: row.updated_at,
+      }));
     }
 
-    const usersById = new Map(users.map((user) => [user.id, user]));
-    const profiles = (profileRows as ProfileRow[]).map((row) => toAccountProfile(row, usersById.get(row.id)));
-    return send(response, 200, { profiles });
+    return send(response, 200, { profiles, aliases });
   }
 
   if (request.method !== 'PATCH') {
@@ -162,14 +218,18 @@ export default async function handler(request: VercelRequest, response: VercelRe
     const fullName = getText(body.fullName);
     const phone = getText(body.phone);
     const avatarUrl = getText(body.avatarUrl);
+    const dateOfBirth = getText(body.dateOfBirth);
 
     if (!fullName) {
       return send(response, 400, { message: 'Vui lòng nhập họ và tên.' });
     }
+    if (dateOfBirth && (!isValidDateOnly(dateOfBirth) || dateOfBirth > new Date().toISOString().slice(0, 10))) {
+      return send(response, 400, { message: 'Ngày sinh chưa hợp lệ.' });
+    }
 
     const currentMetadata = getMetadata(userData.user);
     const { data: updatedAuth, error: authError } = await admin.auth.admin.updateUserById(userData.user.id, {
-      user_metadata: { ...currentMetadata, avatarUrl, fullName, phone },
+      user_metadata: { ...currentMetadata, avatarUrl, dateOfBirth, fullName, phone },
     });
     if (authError) {
       return send(response, 500, { message: 'Chưa lưu được thông tin cá nhân. Vui lòng thử lại.' });
@@ -179,6 +239,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
       .from('profiles')
       .update({
         avatar_url: avatarUrl,
+        date_of_birth: dateOfBirth || null,
         full_name: fullName,
         phone,
         updated_at: new Date().toISOString(),
@@ -253,6 +314,74 @@ export default async function handler(request: VercelRequest, response: VercelRe
     }
 
     return send(response, 200, { profile: toAccountProfile(updatedRow as ProfileRow, updatedAuth.user) });
+  }
+
+  if (action === 'save-staff-alias') {
+    if (requester.role !== 'manager' || !requester.branch_id) {
+      return send(response, 403, { message: 'Chỉ Quản lí chi nhánh mới được đổi tên xếp lịch.' });
+    }
+
+    const employeeId = getText(body.employeeId);
+    const branchId = getText(body.branchId);
+    const displayName = getText(body.displayName);
+
+    if (!employeeId || !branchId || branchId !== requester.branch_id) {
+      return send(response, 400, { message: 'Nhân sự hoặc chi nhánh chưa đúng.' });
+    }
+    if (displayName.length > 80) {
+      return send(response, 400, { message: 'Tên xếp lịch không được dài quá 80 ký tự.' });
+    }
+
+    const { data: employeeRow, error: employeeError } = await admin
+      .from('profiles')
+      .select('id,branch_id')
+      .eq('id', employeeId)
+      .maybeSingle();
+    if (employeeError || !employeeRow || employeeRow.branch_id !== requester.branch_id) {
+      return send(response, 404, { message: 'Không tìm thấy nhân sự thuộc chi nhánh của bạn.' });
+    }
+
+    if (!displayName) {
+      const { error: deleteError } = await admin
+        .from('staff_branch_aliases')
+        .delete()
+        .eq('manager_id', requester.id)
+        .eq('employee_id', employeeId)
+        .eq('branch_id', branchId);
+      if (deleteError) {
+        return send(response, 500, { message: 'Chưa đặt lại được tên nhân sự.' });
+      }
+      return send(response, 200, { alias: null });
+    }
+
+    const { data: savedAlias, error: aliasError } = await admin
+      .from('staff_branch_aliases')
+      .upsert(
+        {
+          manager_id: requester.id,
+          employee_id: employeeId,
+          branch_id: branchId,
+          display_name: displayName,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'manager_id,employee_id,branch_id' },
+      )
+      .select('manager_id,employee_id,branch_id,display_name,updated_at')
+      .single();
+    if (aliasError || !savedAlias) {
+      return send(response, 500, { message: 'Chưa lưu được tên xếp lịch.' });
+    }
+
+    const row = savedAlias as StaffBranchAliasRow;
+    return send(response, 200, {
+      alias: {
+        managerId: row.manager_id,
+        employeeId: row.employee_id,
+        branchId: row.branch_id,
+        displayName: row.display_name,
+        updatedAt: row.updated_at,
+      },
+    });
   }
 
   if (action === 'save-avatar') {

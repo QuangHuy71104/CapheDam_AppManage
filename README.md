@@ -31,6 +31,8 @@ VITE_SUPABASE_URL=https://your-project-ref.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-or-publishable-key
 ```
 
+Các API quản lí nhân sự và tạo dữ liệu thử nghiệm cần thêm `SUPABASE_SECRET_KEY` (hoặc `SUPABASE_SERVICE_ROLE_KEY`) ở biến môi trường **server** của Vercel/.env.local. Không đặt khóa này ở biến `VITE_*` hay đưa lên trình duyệt.
+
 Tài khoản tạo trong web mặc định là `employee`. Sau khi tạo tài khoản, dùng các câu lệnh mẫu cuối file SQL để cấp quyền `manager` hoặc `owner`. Khi đã tạo đủ tài khoản nhân sự, nên tắt public signup trong Supabase.
 
 Khi cập nhật từ phiên bản cũ, chạy lại toàn bộ `database/supabase-schema.sql`. Script có thể chạy lặp lại và sẽ bổ sung các cột hồ sơ, hàm cập nhật an toàn cùng bucket `avatars` mà không xóa dữ liệu vận hành hiện có.
@@ -51,6 +53,18 @@ npm run web:lan
 ```
 
 Sau đó mở địa chỉ LAN Vite hiển thị, ví dụ `http://192.168.1.10:5173`. Không dùng `localhost` trên điện thoại vì địa chỉ đó trỏ về chính điện thoại.
+
+Để thử cả các route `/api/*` tại máy local (quản lí nhân sự, đổi tên xếp lịch và tạo dữ liệu mẫu), chạy:
+
+```bash
+npm run dev:vercel
+```
+
+Lệnh này cần `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` và `SUPABASE_SECRET_KEY` trong môi trường local.
+
+## Dữ liệu thử nghiệm
+
+Sau khi chạy lại `database/supabase-schema.sql`, đăng nhập bằng tài khoản Chủ cửa hàng, mở tab **Nhân sự** và chọn **Tạo dữ liệu thử nghiệm**. Hệ thống tạo một quản lí và ba nhân viên cho mỗi chi nhánh; bảng công tháng hiện tại được đánh dấu đã gửi để quản lí duyệt. Mật khẩu của các tài khoản demo được hiển thị trong màn hình đó và được đặt lại mỗi lần tạo lại dữ liệu.
 
 ## Kiểm tra và build
 

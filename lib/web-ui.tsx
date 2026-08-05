@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ClipboardEventHandler,
   type FocusEventHandler,
   type HTMLAttributes,
   type InputHTMLAttributes,
@@ -279,6 +280,7 @@ export type TextInputProps = AccessibilityProps & {
   onBlur?: FocusEventHandler<TextInput>;
   onChangeText: (value: string) => void;
   onFocus?: FocusEventHandler<TextInput>;
+  onPaste?: ClipboardEventHandler<TextInput>;
   onSubmitEditing?: () => void;
   placeholder?: string;
   placeholderTextColor?: string;
@@ -313,6 +315,7 @@ export const TextInput = forwardRef<TextInput, TextInputProps>(function TextInpu
     onBlur,
     onChangeText,
     onFocus,
+    onPaste,
     onSubmitEditing,
     placeholder,
     placeholderTextColor,
@@ -350,6 +353,7 @@ export const TextInput = forwardRef<TextInput, TextInputProps>(function TextInpu
     onBlur,
     onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => onChangeText(event.target.value),
     onFocus,
+    onPaste,
     onKeyDown: (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       if (event.key === 'Enter' && !event.shiftKey && onSubmitEditing) {
         event.preventDefault();

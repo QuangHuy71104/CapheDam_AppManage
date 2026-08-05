@@ -37,6 +37,7 @@ create table if not exists public.profiles (
   branch_id text references public.branches(id) on update cascade on delete restrict,
   employment_type text not null default 'part_time' check (employment_type in ('full_time', 'part_time')),
   start_date date not null default current_date,
+  date_of_birth date,
   avatar_url text not null default '',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -70,6 +71,7 @@ end $$;
 alter table public.profiles add column if not exists phone text not null default '';
 alter table public.profiles add column if not exists employment_type text not null default 'part_time';
 alter table public.profiles add column if not exists start_date date not null default current_date;
+alter table public.profiles add column if not exists date_of_birth date;
 alter table public.profiles add column if not exists avatar_url text not null default '';
 
 update public.profiles
@@ -87,6 +89,31 @@ begin
   end if;
 end $$;
 
+-- A manager can give each member of their own branch a local display name for
+-- scheduling. This intentionally does not change profiles.full_name.
+create table if not exists public.staff_branch_aliases (
+  manager_id uuid not null references public.profiles(id) on delete cascade,
+  employee_id uuid not null references public.profiles(id) on delete cascade,
+  branch_id text not null references public.branches(id) on update cascade on delete restrict,
+  display_name text not null check (char_length(trim(display_name)) between 1 and 80),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (manager_id, employee_id, branch_id)
+);
+
+-- Schedules keep employee IDs (rather than a typed name) so a manager's
+-- local display-name change is immediately reflected in every saved week.
+create table if not exists public.work_schedules (
+  id text primary key,
+  manager_id uuid not null references public.profiles(id) on delete cascade,
+  branch_id text not null references public.branches(id) on update cascade on delete restrict,
+  week_start date not null,
+  slots jsonb not null default '{}'::jsonb check (jsonb_typeof(slots) = 'object'),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (manager_id, branch_id, week_start)
+);
+
 create table if not exists public.attendance_sheets (
   id text primary key,
   user_id uuid references auth.users(id) on delete set null,
@@ -97,7 +124,7 @@ create table if not exists public.attendance_sheets (
   employee_confirmed_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (branch_id, employee_name, month_key)
+  unique (branch_id, user_id, month_key)
 );
 
 create table if not exists public.branch_payroll_confirmations (
@@ -142,6 +169,37 @@ alter table public.attendance_sheets
   add constraint attendance_sheets_month_key_check
   check (month_key ~ '^[0-9]{4}-(0[1-9]|1[0-2])$');
 
+-- Payroll sheets belong to an account, not a display name. This allows two
+-- employees with the same name and preserves a sheet when a name is edited.
+do $$
+begin
+  if exists (
+    select 1
+    from public.attendance_sheets
+    where user_id is not null
+    group by branch_id, user_id, month_key
+    having count(*) > 1
+  ) then
+    raise notice 'Giữ nguyên khóa bảng công cũ vì còn dữ liệu trùng user_id. Hãy gộp các bảng công trùng trước khi chạy lại migration.';
+  else
+    if not exists (
+      select 1
+      from pg_constraint
+      where conname = 'attendance_sheets_branch_id_user_id_month_key'
+    ) then
+      alter table public.attendance_sheets
+        add constraint attendance_sheets_branch_id_user_id_month_key
+        unique (branch_id, user_id, month_key);
+    end if;
+
+    alter table public.attendance_sheets
+      drop constraint if exists attendance_sheets_branch_id_employee_name_month_key;
+  end if;
+end $$;
+create unique index if not exists attendance_sheets_legacy_name_month_unique
+  on public.attendance_sheets (branch_id, employee_name, month_key)
+  where user_id is null;
+
 alter table public.branch_payroll_confirmations
   drop constraint if exists branch_payroll_confirmations_month_key_check;
 alter table public.branch_payroll_confirmations
@@ -160,6 +218,26 @@ create index if not exists shift_close_reports_branch_reported_idx
   on public.shift_close_reports (branch_id, reported_at desc);
 create index if not exists profiles_branch_idx
   on public.profiles (branch_id);
+create index if not exists staff_branch_aliases_employee_branch_idx
+  on public.staff_branch_aliases (employee_id, branch_id);
+create index if not exists work_schedules_branch_week_idx
+  on public.work_schedules (branch_id, week_start desc);
+
+-- Let managers receive submitted employee payroll without needing to sign out
+-- or reload. The client also has a focus/polling fallback for older projects.
+do $$
+begin
+  alter publication supabase_realtime add table public.attendance_sheets;
+exception
+  when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.branch_payroll_confirmations;
+exception
+  when duplicate_object then null;
+end $$;
 
 create or replace function public.set_updated_at()
 returns trigger
@@ -168,6 +246,88 @@ set search_path = public
 as $$
 begin
   new.updated_at = now();
+  return new;
+end;
+$$;
+
+-- Guard JSON schedule contents at the database boundary as well as in the
+-- UI. A manager can only assign members of the schedule's own branch, and
+-- the saved dates must belong to its Monday-to-Sunday week.
+create or replace function public.validate_work_schedule_slots()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  day_key text;
+  day_slots jsonb;
+  employee_id text;
+  employee_ids jsonb;
+  scheduled_date date;
+  shift_key text;
+begin
+  if extract(isodow from new.week_start) <> 1 then
+    raise exception 'Tuần xếp lịch phải bắt đầu vào Thứ 2.';
+  end if;
+
+  if jsonb_typeof(new.slots) <> 'object' then
+    raise exception 'Dữ liệu lịch làm không hợp lệ.';
+  end if;
+
+  if not exists (
+    select 1
+    from public.profiles as manager_profile
+    where manager_profile.id = new.manager_id
+      and manager_profile.role = 'manager'
+      and manager_profile.branch_id = new.branch_id
+  ) then
+    raise exception 'Quản lí không thuộc chi nhánh của lịch làm.';
+  end if;
+
+  for day_key, day_slots in select key, value from jsonb_each(new.slots) loop
+    if day_key !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' or jsonb_typeof(day_slots) <> 'object' then
+      raise exception 'Ngày hoặc ca trong lịch làm không hợp lệ.';
+    end if;
+
+    begin
+      scheduled_date := day_key::date;
+    exception
+      when others then
+        raise exception 'Ngày hoặc ca trong lịch làm không hợp lệ.';
+    end;
+
+    if scheduled_date < new.week_start or scheduled_date > new.week_start + 6 then
+      raise exception 'Ngày trong lịch không thuộc tuần đã chọn.';
+    end if;
+
+    for shift_key, employee_ids in select key, value from jsonb_each(day_slots) loop
+      if shift_key not in ('morning', 'afternoon', 'opening') or jsonb_typeof(employee_ids) <> 'array' then
+        raise exception 'Ca làm không hợp lệ.';
+      end if;
+
+      if exists (
+        select 1
+        from jsonb_array_elements_text(employee_ids) as scheduled_employee(id)
+        group by scheduled_employee.id
+        having count(*) > 1
+      ) then
+        raise exception 'Một nhân sự không thể xuất hiện hai lần trong cùng một ca.';
+      end if;
+
+      for employee_id in select jsonb_array_elements_text(employee_ids) loop
+        if not exists (
+          select 1
+          from public.profiles as employee_profile
+          where employee_profile.id::text = employee_id
+            and employee_profile.branch_id = new.branch_id
+            and employee_profile.role in ('manager', 'employee')
+        ) then
+          raise exception 'Lịch làm chứa nhân sự không thuộc chi nhánh.';
+        end if;
+      end loop;
+    end loop;
+  end loop;
+
   return new;
 end;
 $$;
@@ -181,6 +341,21 @@ drop trigger if exists profiles_set_updated_at on public.profiles;
 create trigger profiles_set_updated_at
 before update on public.profiles
 for each row execute function public.set_updated_at();
+
+drop trigger if exists staff_branch_aliases_set_updated_at on public.staff_branch_aliases;
+create trigger staff_branch_aliases_set_updated_at
+before update on public.staff_branch_aliases
+for each row execute function public.set_updated_at();
+
+drop trigger if exists work_schedules_set_updated_at on public.work_schedules;
+create trigger work_schedules_set_updated_at
+before update on public.work_schedules
+for each row execute function public.set_updated_at();
+
+drop trigger if exists work_schedules_validate_slots on public.work_schedules;
+create trigger work_schedules_validate_slots
+before insert or update on public.work_schedules
+for each row execute function public.validate_work_schedule_slots();
 
 drop trigger if exists attendance_sheets_set_updated_at on public.attendance_sheets;
 create trigger attendance_sheets_set_updated_at
@@ -204,6 +379,8 @@ for each row execute function public.set_updated_at();
 
 alter table public.branches enable row level security;
 alter table public.profiles enable row level security;
+alter table public.staff_branch_aliases enable row level security;
+alter table public.work_schedules enable row level security;
 alter table public.attendance_sheets enable row level security;
 alter table public.branch_payroll_confirmations enable row level security;
 alter table public.ingredient_reports enable row level security;
@@ -432,6 +609,100 @@ for delete
 to authenticated
 using (public.is_owner());
 
+drop policy if exists "staff_branch_aliases_select" on public.staff_branch_aliases;
+create policy "staff_branch_aliases_select"
+on public.staff_branch_aliases
+for select
+to authenticated
+using (
+  public.is_owner()
+  or (manager_id = auth.uid() and public.is_manager_for(branch_id))
+);
+
+drop policy if exists "staff_branch_aliases_insert_manager" on public.staff_branch_aliases;
+create policy "staff_branch_aliases_insert_manager"
+on public.staff_branch_aliases
+for insert
+to authenticated
+with check (
+  manager_id = auth.uid()
+  and public.is_manager_for(branch_id)
+  and exists (
+    select 1
+    from public.profiles as employee_profile
+    where employee_profile.id = employee_id
+      and employee_profile.branch_id = staff_branch_aliases.branch_id
+  )
+);
+
+drop policy if exists "staff_branch_aliases_update_manager" on public.staff_branch_aliases;
+create policy "staff_branch_aliases_update_manager"
+on public.staff_branch_aliases
+for update
+to authenticated
+using (manager_id = auth.uid() and public.is_manager_for(branch_id))
+with check (
+  manager_id = auth.uid()
+  and public.is_manager_for(branch_id)
+  and exists (
+    select 1
+    from public.profiles as employee_profile
+    where employee_profile.id = employee_id
+      and employee_profile.branch_id = staff_branch_aliases.branch_id
+  )
+);
+
+drop policy if exists "staff_branch_aliases_delete_manager" on public.staff_branch_aliases;
+create policy "staff_branch_aliases_delete_manager"
+on public.staff_branch_aliases
+for delete
+to authenticated
+using (manager_id = auth.uid() and public.is_manager_for(branch_id));
+
+drop policy if exists "work_schedules_select" on public.work_schedules;
+create policy "work_schedules_select"
+on public.work_schedules
+for select
+to authenticated
+using (
+  public.is_owner()
+  or (manager_id = auth.uid() and public.is_manager_for(branch_id))
+);
+
+drop policy if exists "work_schedules_insert_manager" on public.work_schedules;
+create policy "work_schedules_insert_manager"
+on public.work_schedules
+for insert
+to authenticated
+with check (
+  public.is_owner()
+  or (manager_id = auth.uid() and public.is_manager_for(branch_id))
+);
+
+drop policy if exists "work_schedules_update_manager" on public.work_schedules;
+create policy "work_schedules_update_manager"
+on public.work_schedules
+for update
+to authenticated
+using (
+  public.is_owner()
+  or (manager_id = auth.uid() and public.is_manager_for(branch_id))
+)
+with check (
+  public.is_owner()
+  or (manager_id = auth.uid() and public.is_manager_for(branch_id))
+);
+
+drop policy if exists "work_schedules_delete_manager" on public.work_schedules;
+create policy "work_schedules_delete_manager"
+on public.work_schedules
+for delete
+to authenticated
+using (
+  public.is_owner()
+  or (manager_id = auth.uid() and public.is_manager_for(branch_id))
+);
+
 drop policy if exists "attendance_select" on public.attendance_sheets;
 create policy "attendance_select"
 on public.attendance_sheets
@@ -444,15 +715,39 @@ create policy "attendance_insert"
 on public.attendance_sheets
 for insert
 to authenticated
-with check (public.is_owner() or public.is_manager_for(branch_id) or user_id = auth.uid());
+with check (
+  public.is_owner()
+  or public.is_manager_for(branch_id)
+  or (
+    public.current_role() = 'employee'
+    and user_id = auth.uid()
+    and branch_id = public.current_branch_id()
+  )
+);
 
 drop policy if exists "attendance_update" on public.attendance_sheets;
 create policy "attendance_update"
 on public.attendance_sheets
 for update
 to authenticated
-using (public.is_owner() or public.is_manager_for(branch_id) or user_id = auth.uid())
-with check (public.is_owner() or public.is_manager_for(branch_id) or user_id = auth.uid());
+using (
+  public.is_owner()
+  or public.is_manager_for(branch_id)
+  or (
+    public.current_role() = 'employee'
+    and user_id = auth.uid()
+    and branch_id = public.current_branch_id()
+  )
+)
+with check (
+  public.is_owner()
+  or public.is_manager_for(branch_id)
+  or (
+    public.current_role() = 'employee'
+    and user_id = auth.uid()
+    and branch_id = public.current_branch_id()
+  )
+);
 
 drop policy if exists "attendance_delete_owner" on public.attendance_sheets;
 create policy "attendance_delete_owner"

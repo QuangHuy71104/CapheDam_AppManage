@@ -50,12 +50,15 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import { type Ref, useEffect, useRef, useState } from 'react';
+import { type Ref, useCallback, useEffect, useRef, useState } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import { webStorage } from './lib/storage';
+import { parseAttendanceGrid } from './lib/attendance-grid';
+import { StaffManagementScreen } from './StaffManagementScreen';
+import { WorkScheduleScreen } from './lib/work-schedule';
 
-type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients';
+type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients' | 'staffManagement' | 'schedule';
 type UserRole = 'owner' | 'manager' | 'employee';
 type EmploymentType = 'full_time' | 'part_time';
 type AuthFeedback = {
@@ -225,6 +228,7 @@ type UserProfile = {
   avatarUrl: string;
   employmentType: EmploymentType;
   startDate: string;
+  dateOfBirth: string;
 };
 
 type PendingSignupDraft = {
@@ -385,9 +389,21 @@ const ownerTabItems: Array<{
 }> = [
   { key: 'ownerPayroll', label: 'Bảng lương', icon: WalletCards },
   { key: 'ownerIngredients', label: 'Báo đồ', icon: ClipboardList },
+  { key: 'staffManagement', label: 'Nhân sự', icon: UsersRound },
 ];
 
-const getTabItemsForRole = (role: UserRole) => (role === 'owner' ? ownerTabItems : employeeTabItems);
+const managerTabItems: Array<{
+  key: TabKey;
+  label: string;
+  icon: typeof Clock3;
+}> = [
+  ...employeeTabItems,
+  { key: 'staffManagement', label: 'Nhân sự', icon: UsersRound },
+  { key: 'schedule', label: 'Xếp lịch', icon: CalendarDays },
+];
+
+const getTabItemsForRole = (role: UserRole) =>
+  role === 'owner' ? ownerTabItems : role === 'manager' ? managerTabItems : employeeTabItems;
 
 const colors = {
   background: '#F5EDE1',
@@ -678,12 +694,15 @@ const getAttendanceSheet = (
   branchId: string,
   employeeName: string,
   monthKey: string,
+  userId?: string,
 ) =>
   sheets.find(
     (sheet) =>
       sheet.branchId === branchId &&
       sheet.monthKey === monthKey &&
-      sheet.employeeName.trim().toLowerCase() === employeeName.trim().toLowerCase(),
+      (userId
+        ? sheet.userId === userId || (!sheet.userId && sheet.employeeName.trim().toLowerCase() === employeeName.trim().toLowerCase())
+        : sheet.employeeName.trim().toLowerCase() === employeeName.trim().toLowerCase()),
   );
 
 const updateSheetCollection = (
@@ -698,10 +717,16 @@ const updateSheetCollection = (
     (sheet) =>
       sheet.branchId === branchId &&
       sheet.monthKey === monthKey &&
-      sheet.employeeName.trim().toLowerCase() === employeeName.trim().toLowerCase(),
+      (userId
+        ? sheet.userId === userId || (!sheet.userId && sheet.employeeName.trim().toLowerCase() === employeeName.trim().toLowerCase())
+        : sheet.employeeName.trim().toLowerCase() === employeeName.trim().toLowerCase()),
   );
   const baseSheet = index >= 0 ? sheets[index] : createEmptyAttendanceSheet(branchId, employeeName, monthKey, userId);
-  const nextSheet = updater(baseSheet);
+  const nextSheet = updater({
+    ...baseSheet,
+    employeeName: employeeName.trim() || baseSheet.employeeName,
+    userId: baseSheet.userId ?? userId,
+  });
 
   if (index < 0) {
     return [nextSheet, ...sheets];
@@ -791,7 +816,13 @@ const normalizeProfileDate = (value: unknown, fallback?: unknown) => {
   return match?.[0] ?? new Date().toISOString().slice(0, 10);
 };
 
-type EditableProfileOverride = Pick<UserProfile, 'avatarUrl' | 'fullName' | 'phone'>;
+const normalizeOptionalProfileDate = (value: unknown) => {
+  const candidate = typeof value === 'string' ? value : '';
+  const match = candidate.match(/^\d{4}-\d{2}-\d{2}$/);
+  return match?.[0] ?? '';
+};
+
+type EditableProfileOverride = Pick<UserProfile, 'avatarUrl' | 'dateOfBirth' | 'fullName' | 'phone'>;
 
 const readLocalProfileOverride = async (userId: string): Promise<Partial<EditableProfileOverride>> => {
   try {
@@ -802,6 +833,7 @@ const readLocalProfileOverride = async (userId: string): Promise<Partial<Editabl
     const value = JSON.parse(rawValue) as Record<string, unknown>;
     return {
       avatarUrl: typeof value.avatarUrl === 'string' ? value.avatarUrl : undefined,
+      dateOfBirth: typeof value.dateOfBirth === 'string' ? normalizeOptionalProfileDate(value.dateOfBirth) : undefined,
       fullName: typeof value.fullName === 'string' && value.fullName.trim() ? value.fullName.trim() : undefined,
       phone: typeof value.phone === 'string' ? value.phone : undefined,
     };
@@ -824,12 +856,15 @@ const applySelfProfileOverrides = async (profile: UserProfile, user: User) => {
   const metadataName = typeof metadata?.fullName === 'string' && metadata.fullName.trim() ? metadata.fullName.trim() : undefined;
   const metadataPhone = typeof metadata?.phone === 'string' ? metadata.phone : undefined;
   const metadataAvatar = typeof metadata?.avatarUrl === 'string' ? metadata.avatarUrl : undefined;
+  const metadataDateOfBirth =
+    typeof metadata?.dateOfBirth === 'string' ? normalizeOptionalProfileDate(metadata.dateOfBirth) : undefined;
 
   return {
     ...profile,
     fullName: localValue.fullName ?? metadataName ?? profile.fullName,
     phone: localValue.phone ?? metadataPhone ?? profile.phone,
     avatarUrl: localValue.avatarUrl ?? metadataAvatar ?? profile.avatarUrl,
+    dateOfBirth: localValue.dateOfBirth ?? metadataDateOfBirth ?? profile.dateOfBirth,
     employmentType: normalizeEmploymentType(metadata?.employmentType, profile.role),
     startDate: normalizeProfileDate(metadata?.startDate, profile.startDate),
   };
@@ -865,6 +900,7 @@ const mapProfileRow = (row: Record<string, unknown>, user: User): UserProfile =>
     branchId,
     phone: typeof row.phone === 'string' ? row.phone : '',
     avatarUrl: typeof row.avatar_url === 'string' ? row.avatar_url : '',
+    dateOfBirth: normalizeOptionalProfileDate(row.date_of_birth),
     employmentType: normalizeEmploymentType(row.employment_type, role),
     startDate: normalizeProfileDate(row.start_date, row.created_at),
   };
@@ -953,6 +989,7 @@ const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | n
       : normalizeBranchId(fallbackRole, metadata?.branchId),
     phone: typeof metadata?.phone === 'string' ? metadata.phone : '',
     avatarUrl: typeof metadata?.avatarUrl === 'string' ? metadata.avatarUrl : '',
+    dateOfBirth: typeof metadata?.dateOfBirth === 'string' ? normalizeOptionalProfileDate(metadata.dateOfBirth) : '',
     employmentType: normalizeEmploymentType(metadata?.employmentType, fallbackRole),
     startDate: new Date().toISOString().slice(0, 10),
   };
@@ -964,6 +1001,7 @@ const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | n
       full_name: fallbackProfile.fullName,
       role: fallbackProfile.role,
       branch_id: fallbackProfile.branchId,
+      date_of_birth: fallbackProfile.dateOfBirth || null,
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'id' },
@@ -983,16 +1021,19 @@ const loadManagedProfiles = async () => {
 
 const saveOwnProfile = async ({
   avatarUrl,
+  dateOfBirth,
   fullName,
   phone,
 }: {
   avatarUrl: string;
+  dateOfBirth: string;
   fullName: string;
   phone: string;
 }) => {
   const result = await callAccountApi<{ profile: UserProfile }>('PATCH', {
     action: 'save-self',
     avatarUrl,
+    dateOfBirth,
     fullName: fullName.trim(),
     phone: phone.trim(),
   });
@@ -1271,7 +1312,9 @@ const deduplicateAttendanceSheets = (sheets: AttendanceSheet[]) => {
     if (!employeeName || !/^\d{4}-\d{2}$/.test(sheet.monthKey)) {
       return;
     }
-    const key = `${sheet.branchId}|${sheet.monthKey}|${employeeName.toLocaleLowerCase('vi-VN')}`;
+    const key = `${sheet.branchId}|${sheet.monthKey}|${
+      sheet.userId ? `user:${sheet.userId}` : `name:${employeeName.toLocaleLowerCase('vi-VN')}`
+    }`;
     const existing = uniqueSheets.get(key);
     if (!existing) {
       uniqueSheets.set(key, { ...sheet, employeeName });
@@ -1306,9 +1349,22 @@ const deduplicateBranchPayrolls = (confirmations: BranchPayrollConfirmation[]) =
   return [...uniqueConfirmations.values()];
 };
 
-const syncAppDataToSupabase = async (current: AppData, profile: UserProfile) => {
+const changedSinceSnapshot = <T extends { id: string }>(current: T[], snapshot: T[]) => {
+  const snapshotById = new Map(snapshot.map((item) => [item.id, item]));
+  return current.filter((item) => JSON.stringify(item) !== JSON.stringify(snapshotById.get(item.id)));
+};
+
+const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, snapshot: AppData = initialData) => {
   const updatedAt = new Date().toISOString();
   const scopedAttendance = deduplicateAttendanceSheets(current.attendanceSheets).filter((sheet) =>
+    profile.role === 'owner'
+      ? true
+      : profile.role === 'manager'
+        ? sheet.branchId === profile.branchId
+        : sheet.userId === profile.id ||
+          (sheet.branchId === profile.branchId && sheet.employeeName.trim().toLowerCase() === profile.fullName.trim().toLowerCase()),
+  );
+  const snapshotAttendance = deduplicateAttendanceSheets(snapshot.attendanceSheets).filter((sheet) =>
     profile.role === 'owner'
       ? true
       : profile.role === 'manager'
@@ -1319,14 +1375,30 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile) => 
   const scopedPayrolls = deduplicateBranchPayrolls(current.branchPayrolls).filter((confirmation) =>
     profile.role === 'owner' ? true : profile.role === 'manager' && confirmation.branchId === profile.branchId,
   );
+  const snapshotPayrolls = deduplicateBranchPayrolls(snapshot.branchPayrolls).filter((confirmation) =>
+    profile.role === 'owner' ? true : profile.role === 'manager' && confirmation.branchId === profile.branchId,
+  );
   const scopedIngredients = current.ingredients.filter((report) =>
+    profile.role === 'owner' ? true : getReportBranchId(report) === profile.branchId,
+  );
+  const snapshotIngredients = snapshot.ingredients.filter((report) =>
     profile.role === 'owner' ? true : getReportBranchId(report) === profile.branchId,
   );
   const scopedClosings = current.closings.filter((report) =>
     profile.role === 'owner' ? true : getReportBranchId(report) === profile.branchId,
   );
+  const snapshotClosings = snapshot.closings.filter((report) =>
+    profile.role === 'owner' ? true : getReportBranchId(report) === profile.branchId,
+  );
 
-  const attendanceRows = scopedAttendance.map((sheet) => ({
+  // Only send local changes. Re-upserting every row from a manager's old
+  // snapshot can otherwise clear an employee confirmation made elsewhere.
+  const changedAttendance = changedSinceSnapshot(scopedAttendance, snapshotAttendance);
+  const changedPayrolls = changedSinceSnapshot(scopedPayrolls, snapshotPayrolls);
+  const changedIngredients = changedSinceSnapshot(scopedIngredients, snapshotIngredients);
+  const changedClosings = changedSinceSnapshot(scopedClosings, snapshotClosings);
+
+  const attendanceRows = changedAttendance.map((sheet) => ({
     id: sheet.id,
     user_id: sheet.userId ?? (profile.role === 'employee' ? profile.id : null),
     branch_id: sheet.branchId,
@@ -1336,7 +1408,7 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile) => 
     employee_confirmed_at: sheet.employeeConfirmedAt ?? null,
     updated_at: updatedAt,
   }));
-  const payrollRows = scopedPayrolls.map((confirmation) => ({
+  const payrollRows = changedPayrolls.map((confirmation) => ({
     id: confirmation.id,
     branch_id: confirmation.branchId,
     month_key: confirmation.monthKey,
@@ -1346,7 +1418,7 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile) => 
     auto_confirmed: Boolean(confirmation.autoConfirmed),
     updated_at: updatedAt,
   }));
-  const ingredientRows = scopedIngredients.map((report) => ({
+  const ingredientRows = changedIngredients.map((report) => ({
     id: report.id,
     branch_id: getReportBranchId(report),
     reporter_name: report.reporterName ?? null,
@@ -1356,7 +1428,7 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile) => 
     items: report.items ?? [],
     updated_at: updatedAt,
   }));
-  const closingRows = scopedClosings.map((report) => ({
+  const closingRows = changedClosings.map((report) => ({
     id: report.id,
     branch_id: getReportBranchId(report),
     reported_at: report.timestamp,
@@ -1381,7 +1453,13 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile) => 
 };
 
 const clearRemoteAppData = async () => {
-  const tableNames = ['shift_close_reports', 'ingredient_reports', 'branch_payroll_confirmations', 'attendance_sheets'];
+  const tableNames = [
+    'work_schedules',
+    'shift_close_reports',
+    'ingredient_reports',
+    'branch_payroll_confirmations',
+    'attendance_sheets',
+  ];
 
   await Promise.all(
     tableNames.map(async (tableName) => {
@@ -1765,6 +1843,10 @@ export default function App() {
   const contentScrollRef = useRef<ScrollView>(null);
   const exportCaptureRef = useRef<HTMLDivElement>(null);
   const remoteSnapshotRef = useRef('');
+  const latestDataRef = useRef<AppData>(initialData);
+  const latestProfileRef = useRef<UserProfile | null>(null);
+  const remoteRefreshInFlightRef = useRef<Promise<AppData> | null>(null);
+  const syncQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingSignupRef = useRef<PendingSignupDraft | null>(null);
 
   const [employeeName, setEmployeeName] = useState('');
@@ -1832,6 +1914,70 @@ export default function App() {
       };
     });
   };
+
+  // A manager can stay signed in while an employee submits their payroll from
+  // another device. Keep the visible snapshot fresh without replacing edits
+  // that have not been sent to Supabase yet.
+  const refreshRemoteData = useCallback(async () => {
+    if (!profile || !remoteReady || remoteRefreshInFlightRef.current) {
+      return;
+    }
+
+    const localSnapshot = JSON.stringify(latestDataRef.current);
+    if (localSnapshot !== remoteSnapshotRef.current) {
+      return;
+    }
+
+    const request = loadAppDataFromSupabase(profile);
+    remoteRefreshInFlightRef.current = request;
+
+    try {
+      const remoteData = await request;
+
+      const activeProfile = latestProfileRef.current;
+      if (
+        activeProfile?.id !== profile.id ||
+        activeProfile.role !== profile.role ||
+        activeProfile.branchId !== profile.branchId
+      ) {
+        return;
+      }
+
+      // A user may have started editing while the request was in flight.
+      // In that case the normal save flow owns the next snapshot.
+      if (JSON.stringify(latestDataRef.current) !== localSnapshot) {
+        return;
+      }
+
+      remoteSnapshotRef.current = JSON.stringify(remoteData);
+      latestDataRef.current = remoteData;
+      setData(remoteData);
+      setSyncError(null);
+    } catch {
+      // This is a background refresh. Saving data has its own retry/error UI,
+      // so a transient refresh failure should not be shown as a failed save.
+    } finally {
+      if (remoteRefreshInFlightRef.current === request) {
+        remoteRefreshInFlightRef.current = null;
+      }
+    }
+  }, [profile, remoteReady]);
+
+  useEffect(() => {
+    latestDataRef.current = data;
+  }, [data]);
+
+  useEffect(() => {
+    const previousProfile = latestProfileRef.current;
+    latestProfileRef.current = profile;
+    if (
+      previousProfile?.id !== profile?.id ||
+      previousProfile?.role !== profile?.role ||
+      previousProfile?.branchId !== profile?.branchId
+    ) {
+      remoteRefreshInFlightRef.current = null;
+    }
+  }, [profile]);
 
   useEffect(() => {
     const loadData = async () => {
@@ -1985,11 +2131,48 @@ export default function App() {
 
       setSyncingRemote(true);
       try {
-        await syncAppDataToSupabase(data, profile);
-        if (!cancelled) {
-          remoteSnapshotRef.current = snapshot;
-          setSyncError(null);
-        }
+        // Queue writes so an older in-flight request cannot finish after a
+        // newer edit and overwrite it. Each queued task re-reads the newest
+        // local state when it starts.
+        const queuedSync = syncQueueRef.current
+          .catch(() => undefined)
+          .then(async () => {
+            if (cancelled) {
+              return;
+            }
+
+            const activeProfile = latestProfileRef.current;
+            if (
+              !activeProfile ||
+              activeProfile.id !== profile.id ||
+              activeProfile.role !== profile.role ||
+              activeProfile.branchId !== profile.branchId
+            ) {
+              return;
+            }
+
+            const currentData = latestDataRef.current;
+            const currentSnapshot = JSON.stringify(currentData);
+            if (currentSnapshot === remoteSnapshotRef.current) {
+              return;
+            }
+
+            let remoteSnapshot = initialData;
+            try {
+              remoteSnapshot = normalizeAppData(JSON.parse(remoteSnapshotRef.current) as Partial<AppData>);
+            } catch {
+              // A first local change can happen before a snapshot is available.
+            }
+            await syncAppDataToSupabase(currentData, activeProfile, remoteSnapshot);
+
+            if (!cancelled && JSON.stringify(latestDataRef.current) === currentSnapshot) {
+              remoteSnapshotRef.current = currentSnapshot;
+              setSyncError(null);
+              void refreshRemoteData();
+            }
+          });
+        syncQueueRef.current = queuedSync.catch(() => undefined);
+        await queuedSync;
       } catch (error) {
         if (cancelled) {
           return;
@@ -2024,7 +2207,79 @@ export default function App() {
       }
       window.removeEventListener('online', retryWhenOnline);
     };
-  }, [data, profile, remoteReady, syncRetryToken]);
+  }, [data, profile, refreshRemoteData, remoteReady, syncRetryToken]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !profile || !remoteReady) {
+      return;
+    }
+
+    let disposed = false;
+    const requestRefresh = () => {
+      if (!disposed) {
+        void refreshRemoteData();
+      }
+    };
+    const attendanceFilter =
+      profile.role === 'employee'
+        ? `user_id=eq.${profile.id}`
+        : profile.role === 'manager' && profile.branchId
+          ? `branch_id=eq.${profile.branchId}`
+          : undefined;
+    const payrollFilter = profile.role === 'manager' && profile.branchId ? `branch_id=eq.${profile.branchId}` : undefined;
+    let channel = supabase.channel(`app-data-refresh-${profile.id}`);
+
+    channel = channel.on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'attendance_sheets',
+        ...(attendanceFilter ? { filter: attendanceFilter } : {}),
+      },
+      requestRefresh,
+    );
+
+    if (profile.role !== 'employee') {
+      channel = channel.on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'branch_payroll_confirmations',
+          ...(payrollFilter ? { filter: payrollFilter } : {}),
+        },
+        requestRefresh,
+      );
+    }
+
+    channel.subscribe();
+
+    // Realtime must be enabled per table in Supabase. Focus and periodic
+    // refresh make payroll delivery reliable on older projects as well.
+    const refreshInterval = window.setInterval(() => {
+      if (!document.hidden) {
+        requestRefresh();
+      }
+    }, 15_000);
+    const refreshWhenVisible = () => {
+      if (!document.hidden) {
+        requestRefresh();
+      }
+    };
+
+    window.addEventListener('focus', requestRefresh);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    requestRefresh();
+
+    return () => {
+      disposed = true;
+      window.clearInterval(refreshInterval);
+      window.removeEventListener('focus', requestRefresh);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+      void supabase.removeChannel(channel);
+    };
+  }, [profile, refreshRemoteData, remoteReady]);
 
   useEffect(() => {
     const availableTabs = getTabItemsForRole(currentRole);
@@ -2070,7 +2325,7 @@ export default function App() {
     getBranchPayrollConfirmation(data.branchPayrolls, branch.id, selectedMonthKey)?.managerConfirmedAt,
   ).length;
   const employeeSheet = signedEmployeeName
-    ? getAttendanceSheet(data.attendanceSheets, selectedBranchId, signedEmployeeName, selectedMonthKey)
+    ? getAttendanceSheet(data.attendanceSheets, selectedBranchId, signedEmployeeName, selectedMonthKey, profile?.id)
     : undefined;
   const employeePayroll = calculatePayroll(employeeSheet);
   const attendanceMetric =
@@ -2107,7 +2362,7 @@ export default function App() {
     }
 
     setData((current) => {
-      const existingSheet = getAttendanceSheet(current.attendanceSheets, selectedBranchId, employee, selectedMonthKey);
+      const existingSheet = getAttendanceSheet(current.attendanceSheets, selectedBranchId, employee, selectedMonthKey, profile?.id);
 
       if (existingSheet?.employeeConfirmedAt) {
         Alert.alert('Bảng lương đã xác nhận', 'Bạn cần bỏ xác nhận trước khi chỉnh sửa bảng công tháng này.');
@@ -2138,6 +2393,94 @@ export default function App() {
     });
   };
 
+  const updateAttendanceCells = (
+    employee: string,
+    updates: Array<{ day: number; field: keyof AttendanceDayEntry; value: string }>,
+  ) => {
+    const trimmedName = employee.trim();
+    if (!trimmedName) {
+      Alert.alert('Thiếu tên nhân viên', 'Vui lòng nhập tên nhân viên trước khi chấm công.');
+      return;
+    }
+    if (!isCurrentMonth(selectedMonthKey)) {
+      Alert.alert(
+        isFutureMonth(selectedMonthKey) ? 'Tháng này chưa bắt đầu' : 'Chỉ chấm công tháng hiện tại',
+        isFutureMonth(selectedMonthKey)
+          ? 'Không thể chấm công trước cho một tháng trong tương lai.'
+          : 'Các tháng cũ chỉ dùng để xem lại bảng công đã lưu.',
+      );
+      return;
+    }
+
+    const lastDay = getDaysInMonth(selectedMonthKey);
+    const validUpdates = updates.filter((update) => update.day >= 1 && update.day <= lastDay);
+    if (validUpdates.length === 0) {
+      return;
+    }
+
+    setData((current) => {
+      const existingSheet = getAttendanceSheet(current.attendanceSheets, selectedBranchId, employee, selectedMonthKey, profile?.id);
+      if (existingSheet?.employeeConfirmedAt) {
+        Alert.alert('Bảng lương đã xác nhận', 'Bạn cần bỏ xác nhận trước khi chỉnh sửa bảng công tháng này.');
+        return current;
+      }
+
+      return {
+        ...current,
+        attendanceSheets: updateSheetCollection(
+          current.attendanceSheets,
+          selectedBranchId,
+          employee,
+          selectedMonthKey,
+          profile?.id,
+          (sheet) => {
+            const nextDays = { ...sheet.days };
+            validUpdates.forEach(({ day, field, value }) => {
+              const dayKey = getAttendanceDayKey(selectedMonthKey, day);
+              nextDays[dayKey] = {
+                morning: nextDays[dayKey]?.morning ?? '',
+                afternoon: nextDays[dayKey]?.afternoon ?? '',
+                [field]: sanitizeShiftHours(value),
+              };
+            });
+            return { ...sheet, days: nextDays };
+          },
+        ),
+      };
+    });
+  };
+
+  const pasteAttendanceGrid = (
+    employee: string,
+    startDay: number,
+    startField: keyof AttendanceDayEntry,
+    pastedText: string,
+  ) => {
+    updateAttendanceCells(
+      employee,
+      parseAttendanceGrid(pastedText, startField).map((cell) => ({
+        day: startDay + cell.dayOffset,
+        field: cell.field,
+        value: cell.value,
+      })),
+    );
+  };
+
+  const fillAttendanceColumn = (employee: string, field: keyof AttendanceDayEntry, value: string) => {
+    if (!isNumericText(sanitizeShiftHours(value))) {
+      Alert.alert('Số giờ chưa hợp lệ', 'Vui lòng nhập một số giờ hợp lệ trước khi điền tất cả.');
+      return;
+    }
+    updateAttendanceCells(
+      employee,
+      Array.from({ length: getDaysInMonth(selectedMonthKey) }, (_, index) => ({
+        day: index + 1,
+        field,
+        value,
+      })),
+    );
+  };
+
   const confirmEmployeePayroll = (employee: string) => {
     const trimmedName = employee.trim();
 
@@ -2154,7 +2497,7 @@ export default function App() {
       return;
     }
 
-    const currentSheet = getAttendanceSheet(data.attendanceSheets, selectedBranchId, trimmedName, selectedMonthKey);
+    const currentSheet = getAttendanceSheet(data.attendanceSheets, selectedBranchId, trimmedName, selectedMonthKey, profile?.id);
     const payroll = calculatePayroll(currentSheet);
 
     if (payroll.totalHours <= 0) {
@@ -2197,7 +2540,8 @@ export default function App() {
       attendanceSheets: current.attendanceSheets.map((sheet) =>
         sheet.branchId === selectedBranchId &&
         sheet.monthKey === selectedMonthKey &&
-        sheet.employeeName.trim().toLowerCase() === trimmedName.toLowerCase()
+        (sheet.userId === profile?.id ||
+          (!sheet.userId && sheet.employeeName.trim().toLowerCase() === trimmedName.toLowerCase()))
           ? { ...sheet, employeeConfirmedAt: undefined }
           : sheet,
       ),
@@ -2535,8 +2879,10 @@ export default function App() {
                   onCancelEmployeePayroll={cancelEmployeePayroll}
                   onConfirmBranchPayroll={confirmBranchPayroll}
                   onConfirmEmployeePayroll={confirmEmployeePayroll}
+                  onFillColumn={fillAttendanceColumn}
                   onMonthChange={setSelectedMonthKey}
                   onNameChange={setEmployeeName}
+                  onPasteGrid={pasteAttendanceGrid}
                   onUpdateCell={updateAttendanceCell}
                   pendingSheets={branchSheetsForMonth.filter((sheet) => !sheet.employeeConfirmedAt)}
                   sheet={employeeSheet}
@@ -2548,8 +2894,10 @@ export default function App() {
                   monthKey={selectedMonthKey}
                   onConfirmPayroll={confirmEmployeePayroll}
                   onCancelPayroll={cancelEmployeePayroll}
+                  onFillColumn={fillAttendanceColumn}
                   onMonthChange={setSelectedMonthKey}
                   onNameChange={setEmployeeName}
+                  onPasteGrid={pasteAttendanceGrid}
                   onUpdateCell={updateAttendanceCell}
                   sheet={employeeSheet}
                 />
@@ -2641,6 +2989,24 @@ export default function App() {
                 records={data.ingredients}
               />
             )}
+
+            {activeTab === 'staffManagement' && (currentRole === 'owner' || currentRole === 'manager') ? (
+              <StaffManagementScreen
+                branches={branches}
+                currentProfile={profile}
+                onCurrentProfileChange={(nextProfile) => {
+                  setProfile(nextProfile);
+                  setCurrentRole(nextProfile.role);
+                  if (nextProfile.branchId) {
+                    setSelectedBranchId(nextProfile.branchId);
+                  }
+                }}
+              />
+            ) : null}
+
+            {activeTab === 'schedule' && currentRole === 'manager' ? (
+              <WorkScheduleScreen branch={activeBranch} managerId={profile.id} />
+            ) : null}
           </ScrollView>
 
           <View accessibilityRole="tablist" style={styles.tabs}>
@@ -3413,6 +3779,7 @@ function AccountPanel({
 }) {
   const [fullName, setFullName] = useState(profile.fullName);
   const [phone, setPhone] = useState(profile.phone);
+  const [dateOfBirth, setDateOfBirth] = useState(profile.dateOfBirth);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState(profile.avatarUrl);
   const [saving, setSaving] = useState(false);
@@ -3425,6 +3792,7 @@ function AccountPanel({
   useEffect(() => {
     setFullName(profile.fullName);
     setPhone(profile.phone);
+    setDateOfBirth(profile.dateOfBirth);
     setAvatarPreview(profile.avatarUrl);
     setAvatarFile(null);
   }, [profile]);
@@ -3492,12 +3860,18 @@ function AccountPanel({
         }
       }
 
-      const editableProfile = { avatarUrl: nextAvatarUrl, fullName: trimmedName, phone: phone.trim() };
+      const editableProfile = {
+        avatarUrl: nextAvatarUrl,
+        dateOfBirth: normalizeOptionalProfileDate(dateOfBirth),
+        fullName: trimmedName,
+        phone: phone.trim(),
+      };
       await saveLocalProfileOverride(profile.id, editableProfile);
 
       const authMetadata = {
         fullName: editableProfile.fullName,
         phone: editableProfile.phone,
+        dateOfBirth: editableProfile.dateOfBirth,
         ...(!localAvatarFallback && !nextAvatarUrl.startsWith('data:') ? { avatarUrl: nextAvatarUrl } : {}),
       };
       const { error: authUpdateError } = await supabase.auth.updateUser({ data: authMetadata });
@@ -3510,6 +3884,7 @@ function AccountPanel({
       try {
         databaseProfile = await saveOwnProfile({
           avatarUrl: avatarForDatabase,
+          dateOfBirth: editableProfile.dateOfBirth,
           fullName: editableProfile.fullName,
           phone: editableProfile.phone,
         });
@@ -3655,6 +4030,17 @@ function AccountPanel({
               placeholder="Ví dụ: 0901 234 567"
               value={phone}
             />
+            <View style={styles.nativeField}>
+              <Text style={styles.inputLabel}>Ngày tháng năm sinh</Text>
+              <input
+                aria-label="Ngày tháng năm sinh"
+                className="account-native-field"
+                max={new Date().toISOString().slice(0, 10)}
+                onChange={(event) => setDateOfBirth(event.target.value)}
+                type="date"
+                value={dateOfBirth}
+              />
+            </View>
             <PrimaryButton
               icon={Save}
               label={saving ? 'Đang lưu hồ sơ...' : 'Lưu thay đổi'}
@@ -3680,10 +4066,6 @@ function AccountPanel({
               value={`${formatSeniority(profile.startDate)} • Từ ${formatProfileDate(profile.startDate)}`}
             />
           </View>
-
-          {profile.role === 'owner' ? (
-            <OwnerStaffManager currentProfile={profile} onCurrentProfileChange={onProfileChange} />
-          ) : null}
 
           <View style={styles.accountSectionCard}>
             <View style={styles.accountSectionHeading}>
@@ -4364,8 +4746,10 @@ function EmployeeAttendanceScreen({
   monthKey,
   onCancelPayroll,
   onConfirmPayroll,
+  onFillColumn,
   onMonthChange,
   onNameChange,
+  onPasteGrid,
   onUpdateCell,
   sheet,
 }: {
@@ -4374,8 +4758,10 @@ function EmployeeAttendanceScreen({
   monthKey: string;
   onCancelPayroll: (employeeName: string) => void;
   onConfirmPayroll: (employeeName: string) => void;
+  onFillColumn: (employeeName: string, field: keyof AttendanceDayEntry, value: string) => void;
   onMonthChange: (value: string) => void;
   onNameChange: (value: string) => void;
+  onPasteGrid: (employeeName: string, startDay: number, startField: keyof AttendanceDayEntry, pastedText: string) => void;
   onUpdateCell: (employeeName: string, dayKey: string, field: keyof AttendanceDayEntry, value: string) => void;
   sheet?: AttendanceSheet;
 }) {
@@ -4399,6 +4785,8 @@ function EmployeeAttendanceScreen({
         editable={editable}
         employeeName={trimmedName}
         monthKey={monthKey}
+        onFillColumn={onFillColumn}
+        onPasteGrid={onPasteGrid}
         onUpdateCell={onUpdateCell}
         sheet={sheet}
       />
@@ -4407,8 +4795,8 @@ function EmployeeAttendanceScreen({
         <>
           <StatusPanel
             icon={CheckCircle2}
-            title="Đã xác nhận bảng lương"
-            text={`Quản lí chi nhánh sẽ nhìn thấy bảng lương này từ ${formatDateTime(sheet.employeeConfirmedAt)}.`}
+            title="Đã gửi bảng công, chờ quản lí duyệt"
+            text={`Quản lí chi nhánh sẽ nhận được bảng công này từ ${formatDateTime(sheet.employeeConfirmedAt)}.`}
             tone="success"
           />
           {isCurrentMonth(monthKey) ? (
@@ -4423,7 +4811,7 @@ function EmployeeAttendanceScreen({
       ) : (
         <PrimaryButton
           icon={CheckCheck}
-          label="Xác nhận bảng lương"
+          label="Gửi bảng công để quản lí duyệt"
           onPress={() => onConfirmPayroll(trimmedName)}
           tone="primary"
         />
@@ -4442,8 +4830,10 @@ function ManagerAttendanceScreen({
   onCancelEmployeePayroll,
   onConfirmBranchPayroll,
   onConfirmEmployeePayroll,
+  onFillColumn,
   onMonthChange,
   onNameChange,
+  onPasteGrid,
   onUpdateCell,
   pendingSheets,
   sheet,
@@ -4457,8 +4847,10 @@ function ManagerAttendanceScreen({
   onCancelEmployeePayroll: (employeeName: string) => void;
   onConfirmBranchPayroll: () => void;
   onConfirmEmployeePayroll: (employeeName: string) => void;
+  onFillColumn: (employeeName: string, field: keyof AttendanceDayEntry, value: string) => void;
   onMonthChange: (value: string) => void;
   onNameChange: (value: string) => void;
+  onPasteGrid: (employeeName: string, startDay: number, startField: keyof AttendanceDayEntry, pastedText: string) => void;
   onUpdateCell: (employeeName: string, dayKey: string, field: keyof AttendanceDayEntry, value: string) => void;
   pendingSheets: AttendanceSheet[];
   sheet?: AttendanceSheet;
@@ -4483,6 +4875,8 @@ function ManagerAttendanceScreen({
         editable={editable}
         employeeName={employeeName}
         monthKey={monthKey}
+        onFillColumn={onFillColumn}
+        onPasteGrid={onPasteGrid}
         onUpdateCell={onUpdateCell}
         sheet={sheet}
       />
@@ -4506,17 +4900,17 @@ function ManagerAttendanceScreen({
       )}
 
       <View style={styles.managerPanel}>
-        <SectionTitle icon={ClipboardCheck} title="Tổng hợp nhân viên" subtitle="Chỉ hiện bảng lương nhân viên đã xác nhận" />
+        <SectionTitle icon={ClipboardCheck} title="Bảng công chờ duyệt" subtitle="Nhân viên đã gửi bảng công cho quản lí" />
         <PayrollAggregateSummary aggregate={branchPayrollTotal} />
 
-        <HistoryList emptyText="Chưa có nhân viên xác nhận bảng lương." icon={History} title="Bảng lương đã nhận">
+        <HistoryList emptyText="Chưa có nhân viên gửi bảng công." icon={History} title="Nhân viên chờ quản lí duyệt">
           {confirmedSheets.map((confirmedSheet) => {
             const payroll = calculatePayroll(confirmedSheet);
 
             return (
               <HistoryRow
                 key={confirmedSheet.id}
-                meta={`Đã xác nhận: ${formatDateTime(confirmedSheet.employeeConfirmedAt ?? confirmedSheet.id)}`}
+                meta={`Nhân viên gửi lúc: ${formatDateTime(confirmedSheet.employeeConfirmedAt ?? confirmedSheet.id)}`}
                 title={confirmedSheet.employeeName}
                 value={`${formatNumber(payroll.totalHours)} giờ - ${formatCurrency(payroll.totalMoney)}`}
               />
@@ -4526,7 +4920,7 @@ function ManagerAttendanceScreen({
 
         {pendingSheets.length > 0 ? (
           <Text style={styles.pendingText}>
-            {pendingSheets.length} bảng công chưa được gửi vì nhân viên chưa xác nhận bảng lương.
+            {pendingSheets.length} bảng công chưa được gửi vì nhân viên chưa bấm gửi quản lí duyệt.
           </Text>
         ) : null}
 
@@ -4548,7 +4942,7 @@ function ManagerAttendanceScreen({
         ) : (
           <PrimaryButton
             icon={ShieldCheck}
-            label="Xác nhận gửi chủ cửa hàng"
+            label="Duyệt bảng lương và gửi chủ cửa hàng"
             onPress={onConfirmBranchPayroll}
             tone="primary"
           />
@@ -4614,19 +5008,101 @@ function AttendanceSheetTable({
   editable,
   employeeName,
   monthKey,
+  onFillColumn,
+  onPasteGrid,
   onUpdateCell,
   sheet,
 }: {
   editable: boolean;
   employeeName: string;
   monthKey: string;
+  onFillColumn: (employeeName: string, field: keyof AttendanceDayEntry, value: string) => void;
+  onPasteGrid: (employeeName: string, startDay: number, startField: keyof AttendanceDayEntry, pastedText: string) => void;
   onUpdateCell: (employeeName: string, dayKey: string, field: keyof AttendanceDayEntry, value: string) => void;
   sheet?: AttendanceSheet;
 }) {
   const days = Array.from({ length: getDaysInMonth(monthKey) }, (_, index) => index + 1);
+  const [fillMorning, setFillMorning] = useState('');
+  const [fillAfternoon, setFillAfternoon] = useState('');
+  const canFill = editable && Boolean(employeeName.trim());
+  const canFillMorning = canFill && isNumericText(sanitizeShiftHours(fillMorning));
+  const canFillAfternoon = canFill && isNumericText(sanitizeShiftHours(fillAfternoon));
+
+  const handlePaste = (
+    event: React.ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>,
+    day: number,
+    field: keyof AttendanceDayEntry,
+  ) => {
+    const pastedText = event.clipboardData.getData('text/plain');
+    if (!pastedText.includes('\t') && !pastedText.includes('\n')) {
+      return;
+    }
+    event.preventDefault();
+    onPasteGrid(employeeName, day, field, pastedText);
+  };
 
   return (
-    <View style={styles.attendanceTable}>
+    <>
+      <View style={styles.attendanceQuickCard}>
+        <View style={styles.attendanceQuickHeading}>
+          <Text style={styles.attendanceQuickTitle}>Điền nhanh như bảng tính</Text>
+          <Text style={styles.attendanceQuickHint}>
+            Dán vùng Sáng/Chiều từ Google Sheets vào bất kỳ ô nào để điền theo hàng và cột.
+          </Text>
+        </View>
+        <View style={styles.attendanceQuickFields}>
+          <View style={styles.attendanceQuickField}>
+            <Text style={styles.attendanceQuickLabel}>Ca sáng</Text>
+            <TextInput
+              editable={canFill}
+              keyboardType={decimalKeyboard}
+              onChangeText={setFillMorning}
+              placeholder="Ví dụ 4"
+              placeholderTextColor="#9A806B"
+              style={styles.attendanceQuickInput}
+              value={fillMorning}
+            />
+            <Pressable
+              accessibilityRole="button"
+              disabled={!canFillMorning}
+              onPress={() => onFillColumn(employeeName, 'morning', fillMorning)}
+              style={({ pressed }) => [
+                styles.attendanceQuickButton,
+                !canFillMorning && styles.attendanceQuickButtonDisabled,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.attendanceQuickButtonText}>Điền tất cả</Text>
+            </Pressable>
+          </View>
+          <View style={styles.attendanceQuickField}>
+            <Text style={styles.attendanceQuickLabel}>Ca chiều</Text>
+            <TextInput
+              editable={canFill}
+              keyboardType={decimalKeyboard}
+              onChangeText={setFillAfternoon}
+              placeholder="Ví dụ 4"
+              placeholderTextColor="#9A806B"
+              style={styles.attendanceQuickInput}
+              value={fillAfternoon}
+            />
+            <Pressable
+              accessibilityRole="button"
+              disabled={!canFillAfternoon}
+              onPress={() => onFillColumn(employeeName, 'afternoon', fillAfternoon)}
+              style={({ pressed }) => [
+                styles.attendanceQuickButton,
+                !canFillAfternoon && styles.attendanceQuickButtonDisabled,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.attendanceQuickButtonText}>Điền tất cả</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.attendanceTable}>
       <View style={[styles.attendanceRow, styles.attendanceHeaderRow]}>
         <Text style={[styles.attendanceCell, styles.attendanceDateCell]}>Ngày</Text>
         <Text style={[styles.attendanceCell, styles.attendanceWeekdayCell]}>Thứ</Text>
@@ -4645,6 +5121,7 @@ function AttendanceSheetTable({
               editable={editable}
               keyboardType={decimalKeyboard}
               onChangeText={(inputValue) => onUpdateCell(employeeName, dayKey, 'morning', inputValue)}
+              onPaste={(event) => handlePaste(event, day, 'morning')}
               placeholder="0"
               placeholderTextColor="#9A806B"
               style={[styles.attendanceInput, !editable && styles.attendanceInputReadonly]}
@@ -4654,6 +5131,7 @@ function AttendanceSheetTable({
               editable={editable}
               keyboardType={decimalKeyboard}
               onChangeText={(inputValue) => onUpdateCell(employeeName, dayKey, 'afternoon', inputValue)}
+              onPaste={(event) => handlePaste(event, day, 'afternoon')}
               placeholder="0"
               placeholderTextColor="#9A806B"
               style={[styles.attendanceInput, !editable && styles.attendanceInputReadonly]}
@@ -4662,7 +5140,8 @@ function AttendanceSheetTable({
           </View>
         );
       })}
-    </View>
+      </View>
+    </>
   );
 }
 
@@ -7765,6 +8244,68 @@ const styles = StyleSheet.create({
   monthPickerTodayText: {
     color: colors.primary,
     fontSize: 12,
+    fontWeight: '900',
+  },
+  attendanceQuickCard: {
+    backgroundColor: colors.surfaceStrong,
+    borderColor: colors.line,
+    borderRadius: 16,
+    borderWidth: 1,
+    gap: 11,
+    padding: 12,
+  },
+  attendanceQuickHeading: {
+    gap: 3,
+  },
+  attendanceQuickTitle: {
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  attendanceQuickHint: {
+    color: colors.muted,
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  attendanceQuickFields: {
+    flexDirection: 'row',
+    gap: 9,
+  },
+  attendanceQuickField: {
+    flex: 1,
+    gap: 6,
+  },
+  attendanceQuickLabel: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  attendanceQuickInput: {
+    backgroundColor: '#F1DFC7',
+    borderColor: '#C9A989',
+    borderRadius: 9,
+    borderWidth: 1,
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: '800',
+    minHeight: 38,
+    paddingHorizontal: 9,
+    textAlign: 'center',
+  },
+  attendanceQuickButton: {
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    borderRadius: 9,
+    justifyContent: 'center',
+    minHeight: 36,
+    paddingHorizontal: 8,
+  },
+  attendanceQuickButtonDisabled: {
+    backgroundColor: '#A78D7A',
+  },
+  attendanceQuickButtonText: {
+    color: colors.onDark,
+    fontSize: 11,
     fontWeight: '900',
   },
   attendanceTable: {
