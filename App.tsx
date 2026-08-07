@@ -65,6 +65,7 @@ import {
 } from './lib/staff-management';
 
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients' | 'staffManagement' | 'schedule';
+type AppPage = { key: 'main' } | { key: 'managerPayrollEmployee'; employeeId: string };
 type UserRole = 'owner' | 'manager' | 'employee';
 type EmploymentType = 'full_time' | 'part_time';
 type AuthFeedback = {
@@ -2049,6 +2050,7 @@ const transferKeyboard: KeyboardTypeOptions = 'default';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('attendance');
+  const [page, setPage] = useState<AppPage>({ key: 'main' });
   const [data, setData] = useState<AppData>(initialData);
   const [loaded, setLoaded] = useState(false);
   const [authLoaded, setAuthLoaded] = useState(false);
@@ -2511,6 +2513,10 @@ export default function App() {
       setActiveTab(availableTabs[0].key);
     }
   }, [activeTab, currentRole]);
+
+  useEffect(() => {
+    setPage({ key: 'main' });
+  }, [activeTab, currentRole, selectedBranchId]);
 
   useEffect(() => {
     if (!loaded || currentRole === 'employee') {
@@ -3159,6 +3165,8 @@ export default function App() {
               <AuthFeedbackBanner feedback={authFeedback} onDismiss={() => setAuthFeedback(null)} />
             ) : null}
 
+            {page.key === 'main' ? (
+              <>
             <View style={styles.metricsRow}>
               <MetricTile
                 icon={CalendarCheck2}
@@ -3186,6 +3194,7 @@ export default function App() {
                   onReopenEmployeePayroll={reopenEmployeePayroll}
                   onConfirmBranchPayroll={confirmBranchPayroll}
                   onApproveEmployeePayroll={approveEmployeePayroll}
+                  onOpenEmployeePayroll={(employeeId) => setPage({ key: 'managerPayrollEmployee', employeeId })}
                   onMonthChange={setSelectedMonthKey}
                   onPasteGrid={pasteAttendanceGrid}
                   onUpdateCell={updateAttendanceCell}
@@ -3310,8 +3319,25 @@ export default function App() {
             {activeTab === 'schedule' && currentRole === 'manager' ? (
               <WorkScheduleScreen branch={activeBranch} managerId={profile.id} onPublish={publishSchedule} />
             ) : null}
+              </>
+            ) : page.key === 'managerPayrollEmployee' && currentRole === 'manager' ? (
+              <ManagerEmployeePayrollPage
+                branch={activeBranch}
+                employeeId={page.employeeId}
+                managerId={profile.id}
+                monthKey={selectedMonthKey}
+                onApproveEmployeePayroll={approveEmployeePayroll}
+                onBack={() => setPage({ key: 'main' })}
+                onMonthChange={setSelectedMonthKey}
+                onPasteGrid={pasteAttendanceGrid}
+                onReopenEmployeePayroll={reopenEmployeePayroll}
+                onUpdateCell={updateAttendanceCell}
+                sheets={branchSheetsForMonth}
+              />
+            ) : null}
           </ScrollView>
 
+          {page.key === 'main' ? (
           <View accessibilityRole="tablist" style={styles.tabs}>
             {tabItems.map((item) => {
               const Icon = item.icon;
@@ -3336,6 +3362,7 @@ export default function App() {
               );
             })}
           </View>
+          ) : null}
 
           {accountOpen ? (
             <AccountPanel
@@ -5472,6 +5499,7 @@ function ManagerPayrollScreen({
   onCancelBranchPayroll,
   onConfirmBranchPayroll,
   onMonthChange,
+  onOpenEmployeePayroll,
   onPasteGrid,
   onReopenEmployeePayroll,
   onUpdateCell,
@@ -5485,6 +5513,7 @@ function ManagerPayrollScreen({
   onCancelBranchPayroll: () => void;
   onConfirmBranchPayroll: () => void;
   onMonthChange: (value: string) => void;
+  onOpenEmployeePayroll: (employeeId: string) => void;
   onPasteGrid: (employeeName: string, startDay: number, startField: AttendanceInputField, pastedText: string, userId?: string) => void;
   onReopenEmployeePayroll: (employeeName: string, userId: string) => void;
   onUpdateCell: (employeeName: string, dayKey: string, field: AttendanceInputField, value: string, userId?: string) => void;
@@ -5526,17 +5555,11 @@ function ManagerPayrollScreen({
     [aliases, branch.id, managerId, staff],
   );
 
-  useEffect(() => {
-    if (selectedEmployeeId && !branchEmployees.some((person) => person.id === selectedEmployeeId)) {
-      setSelectedEmployeeId(null);
-    }
-  }, [branchEmployees, selectedEmployeeId]);
-
+  const approvedSheets = sheets.filter((sheet) => sheet.managerApprovedAt);
   const selectedEmployee = branchEmployees.find((person) => person.id === selectedEmployeeId);
   const selectedSheet = selectedEmployee
     ? getAttendanceSheet(sheets, branch.id, selectedEmployee.fullName, monthKey, selectedEmployee.id)
     : undefined;
-  const approvedSheets = sheets.filter((sheet) => sheet.managerApprovedAt);
   const aggregate = calculateBranchPayroll(approvedSheets);
   const locked = isManagerCancelLocked(monthKey);
 
@@ -5572,23 +5595,22 @@ function ManagerPayrollScreen({
             {branchEmployees.map((employee) => {
               const sheet = getAttendanceSheet(sheets, branch.id, employee.fullName, monthKey, employee.id);
               const payroll = calculatePayroll(sheet);
-              const selected = selectedEmployeeId === employee.id;
               const displayName = getStaffDisplayName(employee, aliases, managerId, branch.id);
               const status = sheet?.managerApprovedAt ? 'Đã duyệt' : payroll.totalHours > 0 ? 'Chờ duyệt' : 'Chưa có lịch';
               return (
                 <Pressable
                   accessibilityRole="button"
                   key={employee.id}
-                  onPress={() => setSelectedEmployeeId(employee.id)}
-                  style={({ pressed }) => [styles.managerPayrollEmployeeCard, selected && styles.managerPayrollEmployeeCardSelected, pressed && styles.pressed]}
+                  onPress={() => onOpenEmployeePayroll(employee.id)}
+                  style={({ pressed }) => [styles.managerPayrollEmployeeCard, pressed && styles.pressed]}
                 >
                   <View style={styles.flex}>
-                    <Text style={[styles.managerPayrollEmployeeName, selected && styles.managerPayrollEmployeeNameSelected]}>{displayName}</Text>
-                    <Text style={[styles.managerPayrollEmployeeMeta, selected && styles.managerPayrollEmployeeMetaSelected]}>
+                    <Text style={styles.managerPayrollEmployeeName}>{displayName}</Text>
+                    <Text style={styles.managerPayrollEmployeeMeta}>
                       {formatNumber(payroll.totalHours)} giờ · {status}
                     </Text>
                   </View>
-                  <ChevronRight color={selected ? colors.onDark : colors.muted} size={18} />
+                  <ChevronRight color={colors.muted} size={18} />
                 </Pressable>
               );
             })}
@@ -5671,6 +5693,134 @@ function ManagerPayrollScreen({
           />
         )}
       </View>
+    </View>
+  );
+}
+
+function ManagerEmployeePayrollPage({
+  branch,
+  employeeId,
+  managerId,
+  monthKey,
+  onApproveEmployeePayroll,
+  onBack,
+  onMonthChange,
+  onPasteGrid,
+  onReopenEmployeePayroll,
+  onUpdateCell,
+  sheets,
+}: {
+  branch: Branch;
+  employeeId: string;
+  managerId: string;
+  monthKey: string;
+  onApproveEmployeePayroll: (employeeName: string, userId: string) => void;
+  onBack: () => void;
+  onMonthChange: (value: string) => void;
+  onPasteGrid: (employeeName: string, startDay: number, startField: AttendanceInputField, pastedText: string, userId?: string) => void;
+  onReopenEmployeePayroll: (employeeName: string, userId: string) => void;
+  onUpdateCell: (employeeName: string, dayKey: string, field: AttendanceInputField, value: string, userId?: string) => void;
+  sheets: AttendanceSheet[];
+}) {
+  const [staff, setStaff] = useState<ManagedStaffProfile[]>([]);
+  const [aliases, setAliases] = useState<StaffBranchAlias[]>([]);
+  const [loadingStaff, setLoadingStaff] = useState(true);
+  const [staffError, setStaffError] = useState<string | null>(null);
+
+  const refreshStaff = async () => {
+    setLoadingStaff(true);
+    try {
+      const result = await loadStaffManagement();
+      setStaff(result.profiles);
+      setAliases(result.aliases);
+      setStaffError(null);
+    } catch (error) {
+      setStaffError(getFriendlyErrorMessage(error, 'Chưa tải được danh sách nhân viên.'));
+    } finally {
+      setLoadingStaff(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshStaff();
+  }, [managerId]);
+
+  const employee = useMemo(
+    () => staff.find((person) => person.id === employeeId && person.role === 'employee' && person.branchId === branch.id),
+    [branch.id, employeeId, staff],
+  );
+  const sheet = employee ? getAttendanceSheet(sheets, branch.id, employee.fullName, monthKey, employee.id) : undefined;
+
+  return (
+    <View style={styles.screen}>
+      <Pressable
+        accessibilityLabel="Quay lại danh sách nhân viên"
+        accessibilityRole="button"
+        onPress={onBack}
+        style={({ pressed }) => [styles.managerPayrollBackButton, pressed && styles.pressed]}
+      >
+        <ChevronLeft color={colors.primary} size={18} />
+        <Text style={styles.managerPayrollBackText}>Danh sách nhân viên</Text>
+      </Pressable>
+
+      <SectionTitle icon={WalletCards} title="Bảng lương nhân viên" subtitle={branch.name} />
+      <MonthNavigator monthKey={monthKey} onChange={onMonthChange} />
+
+      {loadingStaff ? (
+        <Text style={styles.managerPayrollEmpty}>Đang tải bảng lương nhân viên...</Text>
+      ) : staffError ? (
+        <Text style={styles.managerPayrollError}>{staffError}</Text>
+      ) : employee ? (
+        <View style={styles.managerPayrollDetail}>
+          <View style={styles.managerPayrollDetailHeading}>
+            <View style={styles.flex}>
+              <Text style={styles.managerPayrollDetailEyebrow}>BẢNG LƯƠNG NHÂN VIÊN</Text>
+              <Text style={styles.managerPayrollDetailName}>{getStaffDisplayName(employee, aliases, managerId, branch.id)}</Text>
+              <Text style={styles.managerPayrollDetailHint}>Quản lí có thể sửa trực tiếp giờ công và xem các tháng trước của nhân viên này.</Text>
+            </View>
+          </View>
+          <AttendanceSheetTableV2
+            editable={!isFutureMonth(monthKey)}
+            employeeName={employee.fullName}
+            monthKey={monthKey}
+            onPasteGrid={onPasteGrid}
+            onUpdateCell={onUpdateCell}
+            sheet={sheet}
+            targetUserId={employee.id}
+          />
+          <PayrollSummary payroll={calculatePayroll(sheet)} />
+          {sheet?.managerApprovedAt ? (
+            <>
+              <StatusPanel
+                icon={CheckCircle2}
+                title="Đã duyệt bảng lương nhân viên"
+                text={`${sheet.managerApprovedBy ?? 'Quản lí'} duyệt lúc ${formatDateTime(sheet.managerApprovedAt)}.`}
+                tone="success"
+              />
+              <PrimaryButton
+                icon={XCircle}
+                label="Mở lại để chỉnh sửa"
+                onPress={() => onReopenEmployeePayroll(employee.fullName, employee.id)}
+                tone="danger"
+              />
+            </>
+          ) : (
+            <PrimaryButton
+              icon={CheckCheck}
+              label="Duyệt bảng lương nhân viên"
+              onPress={() => onApproveEmployeePayroll(employee.fullName, employee.id)}
+              tone="primary"
+            />
+          )}
+        </View>
+      ) : (
+        <StatusPanel
+          icon={CircleAlert}
+          title="Không tìm thấy nhân viên"
+          text="Nhân viên này không còn thuộc chi nhánh hiện tại hoặc tài khoản đã thay đổi."
+          tone="neutral"
+        />
+      )}
     </View>
   );
 }
@@ -9165,6 +9315,26 @@ const styles = StyleSheet.create({
     height: 34,
     justifyContent: 'center',
     width: 34,
+  },
+  managerPayrollBackButton: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: colors.surface,
+    borderColor: colors.line,
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 6,
+    minHeight: 38,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  managerPayrollBackText: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0,
+    lineHeight: 16,
   },
   pendingText: {
     color: colors.muted,
