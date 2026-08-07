@@ -77,6 +77,9 @@ export function StaffManagementScreen({
   const [workBranchDraft, setWorkBranchDraft] = useState(branches[0]?.id ?? '');
   const [employmentTypeDraft, setEmploymentTypeDraft] = useState<EmploymentType>('part_time');
   const [startDateDraft, setStartDateDraft] = useState(new Date().toISOString().slice(0, 10));
+  const [hourlyRateDraft, setHourlyRateDraft] = useState('24000');
+  const [allowanceDraft, setAllowanceDraft] = useState('200000');
+  const [breakfastAllowanceDraft, setBreakfastAllowanceDraft] = useState('27000');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [seeding, setSeeding] = useState(false);
@@ -139,6 +142,9 @@ export function StaffManagementScreen({
     setWorkBranchDraft(selectedProfile.branchId ?? branches[0]?.id ?? '');
     setEmploymentTypeDraft(selectedProfile.employmentType);
     setStartDateDraft(selectedProfile.startDate);
+    setHourlyRateDraft(String(selectedProfile.hourlyRate ?? 24000));
+    setAllowanceDraft(String(selectedProfile.allowance ?? 200000));
+    setBreakfastAllowanceDraft(String(selectedProfile.breakfastAllowance ?? 27000));
   }, [aliases, branches, currentBranchId, currentProfile.id, selectedProfile]);
 
   const selectProfile = (nextProfile: ManagedStaffProfile) => {
@@ -194,8 +200,11 @@ export function StaffManagementScreen({
     setFeedback({ tone: 'info', message: 'Đang cập nhật thông tin làm việc...' });
     try {
       const nextProfile = await saveManagedWorkProfile(selectedProfile.id, {
+        allowance: Number(allowanceDraft) || 0,
         branchId: roleDraft === 'owner' ? null : workBranchDraft,
+        breakfastAllowance: Number(breakfastAllowanceDraft) || 0,
         employmentType: employmentTypeDraft,
+        hourlyRate: Number(hourlyRateDraft) || 0,
         role: roleDraft,
         startDate: startDateDraft,
       });
@@ -423,7 +432,7 @@ export function StaffManagementScreen({
                   </View>
                 ) : null}
 
-                {selected && isOwner ? (
+                {selected && (isOwner || isManager) ? (
                   <View style={styles.editor}>
                     <View style={styles.editorHeading}>
                       <ShieldCheck color={colors.primary} size={18} />
@@ -437,7 +446,7 @@ export function StaffManagementScreen({
                       <Text style={styles.fieldLabel}>Vị trí</Text>
                       <select
                         aria-label="Vị trí"
-                        disabled={staffProfile.id === currentProfile.id}
+                        disabled={isManager || staffProfile.id === currentProfile.id}
                         onChange={(event) => setRoleDraft(event.target.value as StaffRole)}
                         style={styles.nativeSelect}
                         value={roleDraft}
@@ -452,7 +461,7 @@ export function StaffManagementScreen({
                       <Text style={styles.fieldLabel}>Nơi làm việc</Text>
                       <select
                         aria-label="Nơi làm việc"
-                        disabled={roleDraft === 'owner'}
+                        disabled={isManager || roleDraft === 'owner'}
                         onChange={(event) => setWorkBranchDraft(event.target.value)}
                         style={styles.nativeSelect}
                         value={roleDraft === 'owner' ? '' : workBranchDraft}
@@ -470,9 +479,42 @@ export function StaffManagementScreen({
                         style={styles.nativeSelect}
                         value={employmentTypeDraft}
                       >
-                        <option value="full_time">Toàn thời gian</option>
-                        <option value="part_time">Bán thời gian</option>
+                        <option value="full_time">Full time</option>
+                        <option value="part_time">Part time</option>
                       </select>
+                    </View>
+
+                    <View style={styles.moneyGrid}>
+                      <View style={styles.field}>
+                        <Text style={styles.fieldLabel}>Lương k/giờ</Text>
+                        <input
+                          aria-label="Lương k/giờ"
+                          inputMode="numeric"
+                          onChange={(event) => setHourlyRateDraft(event.target.value.replace(/\D/g, ''))}
+                          style={styles.nativeInput}
+                          value={hourlyRateDraft}
+                        />
+                      </View>
+                      <View style={styles.field}>
+                        <Text style={styles.fieldLabel}>Phụ cấp</Text>
+                        <input
+                          aria-label="Phụ cấp"
+                          inputMode="numeric"
+                          onChange={(event) => setAllowanceDraft(event.target.value.replace(/\D/g, ''))}
+                          style={styles.nativeInput}
+                          value={allowanceDraft}
+                        />
+                      </View>
+                      <View style={styles.field}>
+                        <Text style={styles.fieldLabel}>Tiền ăn sáng</Text>
+                        <input
+                          aria-label="Tiền ăn sáng"
+                          inputMode="numeric"
+                          onChange={(event) => setBreakfastAllowanceDraft(event.target.value.replace(/\D/g, ''))}
+                          style={styles.nativeInput}
+                          value={breakfastAllowanceDraft}
+                        />
+                      </View>
                     </View>
 
                     <View style={styles.field}>
@@ -747,6 +789,9 @@ const styles = StyleSheet.create({
     outline: 'none',
     padding: '7px 9px',
     width: '100%',
+  },
+  moneyGrid: {
+    gap: 8,
   },
   originalName: {
     color: colors.muted,

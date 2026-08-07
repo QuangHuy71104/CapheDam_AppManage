@@ -38,6 +38,9 @@ create table if not exists public.profiles (
   employment_type text not null default 'part_time' check (employment_type in ('full_time', 'part_time')),
   start_date date not null default current_date,
   date_of_birth date,
+  hourly_rate integer not null default 24000,
+  allowance integer not null default 200000,
+  breakfast_allowance integer not null default 27000,
   avatar_url text not null default '',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -72,6 +75,9 @@ alter table public.profiles add column if not exists phone text not null default
 alter table public.profiles add column if not exists employment_type text not null default 'part_time';
 alter table public.profiles add column if not exists start_date date not null default current_date;
 alter table public.profiles add column if not exists date_of_birth date;
+alter table public.profiles add column if not exists hourly_rate integer not null default 24000;
+alter table public.profiles add column if not exists allowance integer not null default 200000;
+alter table public.profiles add column if not exists breakfast_allowance integer not null default 27000;
 alter table public.profiles add column if not exists avatar_url text not null default '';
 
 update public.profiles

@@ -16,13 +16,16 @@ type UserRole = 'owner' | 'manager' | 'employee';
 type EmploymentType = 'full_time' | 'part_time';
 
 type ProfileRow = {
+  allowance: number | null;
   avatar_url: string;
   branch_id: string | null;
+  breakfast_allowance: number | null;
   created_at: string;
   date_of_birth: string | null;
   email: string;
   employment_type: EmploymentType;
   full_name: string;
+  hourly_rate: number | null;
   id: string;
   phone: string;
   role: UserRole;
@@ -30,12 +33,15 @@ type ProfileRow = {
 };
 
 type AccountProfile = {
+  allowance: number;
   avatarUrl: string;
   branchId: string | null;
+  breakfastAllowance: number;
   dateOfBirth: string;
   email: string;
   employmentType: EmploymentType;
   fullName: string;
+  hourlyRate: number;
   id: string;
   phone: string;
   role: UserRole;
@@ -60,12 +66,19 @@ type StaffBranchAlias = {
 
 const validRoles: UserRole[] = ['owner', 'manager', 'employee'];
 const validEmploymentTypes: EmploymentType[] = ['full_time', 'part_time'];
-const profileFields = 'id,email,full_name,role,branch_id,phone,avatar_url,employment_type,start_date,date_of_birth,created_at';
+const profileFields = 'id,email,full_name,role,branch_id,phone,avatar_url,employment_type,start_date,date_of_birth,hourly_rate,allowance,breakfast_allowance,created_at';
+const defaultHourlyRate = 24000;
+const defaultAllowance = 200000;
+const defaultBreakfastAllowance = 27000;
 
 const send = (response: VercelResponse, status: number, body: Record<string, unknown>) =>
   response.status(status).json(body);
 
 const getText = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+const getMoney = (value: unknown, fallback: number) => {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : fallback;
+};
 
 const isValidDateOnly = (value: string) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -104,6 +117,9 @@ const toAccountProfile = (row: ProfileRow, user?: User | null): AccountProfile =
     branchId: role === 'owner' ? null : row.branch_id,
     phone: getText(metadata.phone) || row.phone,
     avatarUrl: getText(metadata.avatarUrl) || row.avatar_url,
+    hourlyRate: getMoney(row.hourly_rate, defaultHourlyRate),
+    allowance: getMoney(row.allowance, defaultAllowance),
+    breakfastAllowance: getMoney(row.breakfast_allowance, defaultBreakfastAllowance),
     employmentType,
     dateOfBirth: isValidDateOnly(metadataDateOfBirth)
       ? metadataDateOfBirth
@@ -255,8 +271,8 @@ export default async function handler(request: VercelRequest, response: VercelRe
   }
 
   if (action === 'save-work') {
-    if (requester.role !== 'owner') {
-      return send(response, 403, { message: 'Chỉ Chủ cửa hàng mới được đổi thông tin làm việc.' });
+    if (requester.role !== 'owner' && requester.role !== 'manager') {
+      return send(response, 403, { message: 'Chỉ Quản lí hoặc Chủ cửa hàng mới được đổi thông tin làm việc.' });
     }
 
     const targetId = getText(body.targetId);
@@ -264,6 +280,9 @@ export default async function handler(request: VercelRequest, response: VercelRe
     const employmentType = body.employmentType as EmploymentType;
     const startDate = getText(body.startDate);
     const branchId = role === 'owner' ? null : getText(body.branchId);
+    const hourlyRate = getMoney(body.hourlyRate, defaultHourlyRate);
+    const allowance = getMoney(body.allowance, defaultAllowance);
+    const breakfastAllowance = getMoney(body.breakfastAllowance, defaultBreakfastAllowance);
 
     if (!targetId || !validRoles.includes(role) || !validEmploymentTypes.includes(employmentType)) {
       return send(response, 400, { message: 'Thông tin làm việc chưa đầy đủ.' });
@@ -282,12 +301,32 @@ export default async function handler(request: VercelRequest, response: VercelRe
     if (targetUserError || !targetUserData.user) {
       return send(response, 404, { message: 'Không tìm thấy tài khoản nhân viên này.' });
     }
+    const { data: currentTargetRow, error: currentTargetError } = await admin
+      .from('profiles')
+      .select(profileFields)
+      .eq('id', targetId)
+      .single();
+    if (currentTargetError || !currentTargetRow) {
+      return send(response, 404, { message: 'Không tìm thấy hồ sơ nhân viên này.' });
+    }
+    const targetProfile = currentTargetRow as ProfileRow;
+    if (requester.role === 'manager') {
+      if (targetProfile.branch_id !== requester.branch_id || targetProfile.role !== 'employee') {
+        return send(response, 403, { message: 'Quản lí chỉ được sửa nhân viên trong chi nhánh của mình.' });
+      }
+      if (role !== targetProfile.role || branchId !== targetProfile.branch_id) {
+        return send(response, 403, { message: 'Quản lí không được đổi vị trí hoặc chi nhánh.' });
+      }
+    }
 
     const { data: updatedRow, error: profileError } = await admin
       .from('profiles')
       .update({
+        allowance,
         branch_id: branchId,
+        breakfast_allowance: breakfastAllowance,
         employment_type: employmentType,
+        hourly_rate: hourlyRate,
         role,
         start_date: startDate,
         updated_at: new Date().toISOString(),
@@ -303,8 +342,11 @@ export default async function handler(request: VercelRequest, response: VercelRe
     const { data: updatedAuth, error: authError } = await admin.auth.admin.updateUserById(targetId, {
       user_metadata: {
         ...currentMetadata,
+        allowance,
         branchId,
+        breakfastAllowance,
         employmentType,
+        hourlyRate,
         role,
         startDate,
       },

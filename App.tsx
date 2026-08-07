@@ -47,6 +47,7 @@ import {
   UserRound,
   UsersRound,
   WalletCards,
+  LockKeyhole,
   X,
   XCircle,
 } from 'lucide-react';
@@ -242,6 +243,9 @@ type UserProfile = {
   employmentType: EmploymentType;
   startDate: string;
   dateOfBirth: string;
+  hourlyRate: number;
+  allowance: number;
+  breakfastAllowance: number;
 };
 
 type PendingSignupDraft = {
@@ -767,13 +771,13 @@ const updateSheetCollection = (
 
 const calculatePayroll = (sheet?: AttendanceSheet) => {
   const days = Object.values(sheet?.days ?? {});
-  const morningHours = days.reduce((total, day) => total + toNumber(day.morning), 0);
-  const afternoonHours = days.reduce((total, day) => total + toNumber(day.afternoon), 0);
   const openingHours = days.reduce((total, day) => total + toNumber(day.opening), 0);
-  const morningShifts = days.filter((day) => toNumber(day.morning) > 0).length;
+  const morningHours = days.reduce((total, day) => total + toNumber(day.morning), 0) + openingHours;
+  const afternoonHours = days.reduce((total, day) => total + toNumber(day.afternoon), 0);
+  const morningShifts = days.filter((day) => toNumber(day.morning) + toNumber(day.opening) > 0).length;
   const afternoonShifts = days.filter((day) => toNumber(day.afternoon) > 0).length;
   const openingShifts = days.filter((day) => toNumber(day.opening) > 0).length;
-  const totalHours = morningHours + afternoonHours + openingHours;
+  const totalHours = morningHours + afternoonHours;
   const breakfastMoney = morningShifts * payrollPolicy.breakfastPerMorningShift;
   const allowanceMoney = totalHours > 0 ? payrollPolicy.monthlyAllowance : 0;
   const wageMoney = Math.round(totalHours * payrollPolicy.hourlyRate);
@@ -805,10 +809,9 @@ const calculateBranchPayroll = (sheets: AttendanceSheet[]) =>
         totalMoney: total.totalMoney + payroll.totalMoney,
         morningShifts: total.morningShifts + payroll.morningShifts,
         afternoonShifts: total.afternoonShifts + payroll.afternoonShifts,
-        openingHours: total.openingHours + payroll.openingHours,
       };
     },
-    { employees: 0, totalHours: 0, totalMoney: 0, morningShifts: 0, afternoonShifts: 0, openingHours: 0 },
+    { employees: 0, totalHours: 0, totalMoney: 0, morningShifts: 0, afternoonShifts: 0 },
   );
 
 const getBranchPayrollConfirmation = (
@@ -956,6 +959,10 @@ const mapProfileRow = (row: Record<string, unknown>, user: User): UserProfile =>
   const role = normalizeRole(row.role);
   const branchId = normalizeBranchId(role, row.branch_id);
   const normalizedEmail = typeof row.email === 'string' && row.email ? normalizeEmailAddress(row.email) : '';
+  const getMoneyValue = (value: unknown, fallback: number) => {
+    const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  };
 
   return {
     id: typeof row.id === 'string' && row.id ? row.id : user.id,
@@ -968,6 +975,9 @@ const mapProfileRow = (row: Record<string, unknown>, user: User): UserProfile =>
     dateOfBirth: normalizeOptionalProfileDate(row.date_of_birth),
     employmentType: normalizeEmploymentType(row.employment_type, role),
     startDate: normalizeProfileDate(row.start_date, row.created_at),
+    hourlyRate: getMoneyValue(row.hourly_rate, payrollPolicy.hourlyRate),
+    allowance: getMoneyValue(row.allowance, payrollPolicy.monthlyAllowance),
+    breakfastAllowance: getMoneyValue(row.breakfast_allowance, payrollPolicy.breakfastPerMorningShift),
   };
 };
 
@@ -1057,6 +1067,9 @@ const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | n
     dateOfBirth: typeof metadata?.dateOfBirth === 'string' ? normalizeOptionalProfileDate(metadata.dateOfBirth) : '',
     employmentType: normalizeEmploymentType(metadata?.employmentType, fallbackRole),
     startDate: new Date().toISOString().slice(0, 10),
+    hourlyRate: payrollPolicy.hourlyRate,
+    allowance: payrollPolicy.monthlyAllowance,
+    breakfastAllowance: payrollPolicy.breakfastPerMorningShift,
   };
 
   const { error: upsertError } = await supabase.from('profiles').upsert(
@@ -1107,13 +1120,16 @@ const saveOwnProfile = async ({
 
 const saveManagedProfile = async (
   id: string,
-  patch: Pick<UserProfile, 'branchId' | 'employmentType' | 'role' | 'startDate'>,
+  patch: Pick<UserProfile, 'allowance' | 'branchId' | 'breakfastAllowance' | 'employmentType' | 'hourlyRate' | 'role' | 'startDate'>,
 ) => {
   const branchId = patch.role === 'owner' ? null : patch.branchId || defaultBranchId;
   const result = await callAccountApi<{ profile: UserProfile }>('PATCH', {
     action: 'save-work',
+    allowance: patch.allowance,
     branchId,
+    breakfastAllowance: patch.breakfastAllowance,
     employmentType: patch.employmentType,
+    hourlyRate: patch.hourlyRate,
     role: patch.role,
     startDate: patch.startDate,
     targetId: id,
@@ -1627,7 +1643,13 @@ const applyPublishedScheduleToAttendance = (current: AppData, schedule: Publishe
     }
 
     const hoursForDay = employee.days.get(assignment.dateKey) ?? {};
-    hoursForDay[assignment.shift] = formatHoursInput(assignment.hours);
+    if (assignment.shift === 'opening') {
+      const morningHours = toNumber(hoursForDay.morning ?? '') + assignment.hours;
+      hoursForDay.morning = formatHoursInput(morningHours);
+      hoursForDay.opening = '';
+    } else {
+      hoursForDay[assignment.shift] = formatHoursInput(assignment.hours);
+    }
     employee.days.set(assignment.dateKey, hoursForDay);
     affectedDateKeys.add(assignment.dateKey);
   });
@@ -2010,10 +2032,40 @@ const downloadFile = (url: string, fileName: string) => {
   link.remove();
 };
 
+const dataUriToFile = async (dataUri: string, fileName: string) => {
+  const response = await fetch(dataUri);
+  const blob = await response.blob();
+  return new File([blob], fileName, { type: blob.type || 'image/png' });
+};
+
+const shareText = async (text: string) => {
+  if (navigator.share) {
+    await navigator.share({ text });
+    return;
+  }
+
+  await navigator.clipboard?.writeText(text);
+  Alert.alert('Đã chuẩn bị nội dung', 'Trình duyệt không hỗ trợ mở share. Nội dung đã được sao chép.');
+};
+
+const shareFile = async (file: File, text: string) => {
+  const sharePayload = { files: [file], text };
+  if (navigator.share && (!navigator.canShare || navigator.canShare(sharePayload))) {
+    await navigator.share(sharePayload);
+    return;
+  }
+
+  const fileUrl = URL.createObjectURL(file);
+  downloadFile(fileUrl, file.name);
+  setTimeout(() => URL.revokeObjectURL(fileUrl), 1000);
+  await navigator.clipboard?.writeText(text);
+  Alert.alert('Đã tạo ảnh báo ca', 'Trình duyệt không hỗ trợ share file. Ảnh đã được tải xuống, nội dung gửi đã được sao chép.');
+};
+
 const exportClosingReportImage = async (
   report: ShiftCloseReport,
   exportViewRef: { current: HTMLElement | null },
-) => {
+): Promise<File> => {
   await waitForNextFrame();
 
   try {
@@ -2028,9 +2080,9 @@ const exportClosingReportImage = async (
       cacheBust: true,
       pixelRatio: 2,
     });
-    downloadFile(dataUri, fileName);
+    return dataUriToFile(dataUri, fileName);
   } catch {
-    await exportClosingReportSvg(report);
+    return exportClosingReportSvg(report);
   }
 };
 
@@ -2039,9 +2091,7 @@ const exportClosingReportSvg = async (report: ShiftCloseReport) => {
   const fileName = `bao-ca-${report.id}.svg`;
 
   const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
-  const fileUrl = URL.createObjectURL(blob);
-  downloadFile(fileUrl, fileName);
-  setTimeout(() => URL.revokeObjectURL(fileUrl), 1000);
+  return new File([blob], fileName, { type: 'image/svg+xml' });
 };
 
 const numericKeyboard: KeyboardTypeOptions = 'number-pad';
@@ -2624,7 +2674,7 @@ export default function App() {
               [dayKey]: {
                 morning: sheet.days[dayKey]?.morning ?? '',
                 afternoon: sheet.days[dayKey]?.afternoon ?? '',
-                opening: sheet.days[dayKey]?.opening ?? '',
+                opening: field === 'morning' ? '' : sheet.days[dayKey]?.opening ?? '',
                 [field]: sanitizeShiftHours(value),
               },
             },
@@ -2691,7 +2741,7 @@ export default function App() {
               nextDays[dayKey] = {
                 morning: nextDays[dayKey]?.morning ?? '',
                 afternoon: nextDays[dayKey]?.afternoon ?? '',
-                opening: nextDays[dayKey]?.opening ?? '',
+                opening: field === 'morning' ? '' : nextDays[dayKey]?.opening ?? '',
                 [field]: sanitizeShiftHours(value),
               };
             });
@@ -2915,7 +2965,7 @@ export default function App() {
     }));
   };
 
-  const saveIngredientReport = () => {
+  const saveIngredientReport = async () => {
     const report: IngredientReport = {
       id: createId(),
       branchId: selectedBranchId,
@@ -2936,6 +2986,7 @@ export default function App() {
     }));
     setSupplyRows(createSupplyState());
     setIngredientNote('');
+    await shareText(buildSupplyShareText(activeBranch, report));
   };
 
   const saveShiftClose = () => {
@@ -2943,6 +2994,28 @@ export default function App() {
 
     const bankTransferExpression = trimTransferExpression(bankTransferMoney);
     const bankTransferTotal = sumTransferExpression(bankTransferMoney);
+    const requiredErrors = [
+      ...plasticCupTemplates.flatMap(({ key }) => {
+        const row = plasticCupRows[key];
+        return [
+          row.opening.trim() ? '' : `plastic.${key}.opening`,
+          row.remaining.trim() ? '' : `plastic.${key}.remaining`,
+          row.machineCups.trim() ? '' : `plastic.${key}.machineCups`,
+        ];
+      }),
+      cornMilkRow.opening.trim() ? '' : 'cornMilk.opening',
+      cornMilkRow.remaining.trim() ? '' : 'cornMilk.remaining',
+      cornMilkRow.machineCups.trim() ? '' : 'cornMilk.machineCups',
+      machineMoney.trim() ? '' : 'machineMoney',
+      storeMoney.trim() ? '' : 'storeMoney',
+      iceBags.trim() ? '' : 'iceBags',
+    ].filter(Boolean);
+
+    if (requiredErrors.length > 0) {
+      setClosingErrors(requiredErrors);
+      Alert.alert('Vui lòng điền đầy đủ các mục có dấu *');
+      return;
+    }
 
     const report: ShiftCloseReport = {
       id: createId(),
@@ -3047,10 +3120,11 @@ export default function App() {
 
     const runExport = async () => {
       try {
-        await exportClosingReportImage(pendingClosingExport, exportCaptureRef);
+        const file = await exportClosingReportImage(pendingClosingExport, exportCaptureRef);
+        await shareFile(file, 'Dạ em gửi báo ca ạ');
       } catch {
         if (!cancelled) {
-          Alert.alert('Không xuất được ảnh báo ca', 'Dữ liệu đã được lưu nhưng ảnh báo cáo chưa tạo được.');
+          Alert.alert('Không mở được chia sẻ báo ca', 'Dữ liệu đã được lưu nhưng ảnh báo cáo chưa gửi được.');
         }
       } finally {
         if (!cancelled) {
@@ -3127,8 +3201,6 @@ export default function App() {
                 <Image source={logoImage} style={styles.brandLogo} />
               </View>
               <View style={styles.brandCopy}>
-                <Text style={styles.brandScript}>Cà phê</Text>
-                <Text style={styles.appName}>ĐẠM</Text>
                 <Text style={styles.appSubtitle}>{activeBranch.name}</Text>
               </View>
             </View>
@@ -3167,21 +3239,23 @@ export default function App() {
 
             {page.key === 'main' ? (
               <>
-            <View style={styles.metricsRow}>
-              <MetricTile
-                icon={CalendarCheck2}
-                label={currentRole === 'owner' ? 'Đã nhận lương' : currentRole === 'manager' ? 'NV đã duyệt' : 'Giờ tháng'}
-                value={formatNumber(attendanceMetric)}
-                tone="teal"
-              />
-              <MetricTile icon={Beef} label="Báo đồ" value={ingredientMetric.toString()} tone="amber" />
-              <MetricTile
-                icon={currentRole === 'owner' ? Building2 : WalletCards}
-                label={currentRole === 'owner' ? 'Chi nhánh' : 'Báo ca'}
-                value={closingMetric.toString()}
-                tone="blue"
-              />
-            </View>
+            {currentRole === 'employee' ? null : (
+              <View style={styles.metricsRow}>
+                <MetricTile
+                  icon={CalendarCheck2}
+                  label={currentRole === 'owner' ? 'Đã nhận lương' : 'NV đã duyệt'}
+                  value={formatNumber(attendanceMetric)}
+                  tone="teal"
+                />
+                <MetricTile icon={Beef} label="Báo đồ" value={ingredientMetric.toString()} tone="amber" />
+                <MetricTile
+                  icon={currentRole === 'owner' ? Building2 : WalletCards}
+                  label={currentRole === 'owner' ? 'Chi nhánh' : 'Báo ca'}
+                  value={closingMetric.toString()}
+                  tone="blue"
+                />
+              </View>
+            )}
 
             {activeTab === 'attendance' && (
               currentRole === 'manager' ? (
@@ -3414,7 +3488,6 @@ function LoadingScreen({ text }: { text: string }) {
     <SafeAreaView style={styles.safeArea}>
       <View style={[styles.shell, styles.centerScreen]}>
         <Image source={logoImage} style={styles.loadingLogo} />
-        <Text style={styles.loadingTitle}>Cà phê Đạm</Text>
         <Text style={styles.loadingText}>{text}</Text>
       </View>
     </SafeAreaView>
@@ -3575,12 +3648,6 @@ function AuthScreen({
       if (error) {
         throw error;
       }
-
-      onAuthFeedbackChange({
-        tone: 'success',
-        title: 'Đăng nhập thành công',
-        message: 'Đăng nhập thành công. Đang tải dữ liệu...',
-      });
     } catch (error) {
       onSignupDraftChange(null);
       const message = getFriendlyErrorMessage(
@@ -3624,10 +3691,6 @@ function AuthScreen({
                 <View style={styles.authHeroLogoFrame}>
                   <Image source={logoImage} style={styles.authHeroLogo} />
                 </View>
-                <View style={styles.flex}>
-                  <Text style={styles.authHeroBrandName}>CÀ PHÊ ĐẠM</Text>
-                  <Text style={styles.authHeroBrandMeta}>Ứng dụng vận hành nội bộ</Text>
-                </View>
               </View>
 
               <View style={styles.authHeroCopy}>
@@ -3636,7 +3699,7 @@ function AuthScreen({
                   <Text style={styles.authSystemText}>Hệ thống đang hoạt động</Text>
                 </View>
                 <Text style={styles.authHeroTitle}>
-                  {isSignIn ? 'Chào bạn,\nsẵn sàng vào ca?' : 'Bắt đầu cùng\nCà phê Đạm'}
+                  {isSignIn ? 'Chào bạn,\nsẵn sàng vào ca?' : 'Bắt đầu tài khoản\nnhân viên'}
                 </Text>
                 <Text style={styles.authHeroSubtitle}>
                   {isSignIn
@@ -3779,7 +3842,7 @@ function AuthScreen({
               </View>
             </View>
 
-            <Text style={styles.authFooter}>Cà phê Đạm • Chỉ dành cho nhân sự được cấp quyền</Text>
+            <Text style={styles.authFooter}>Chỉ dành cho nhân sự được cấp quyền</Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -3876,6 +3939,14 @@ function AuthFormField({
 
 function AuthFeedbackBanner({ feedback, onDismiss }: { feedback: AuthFeedback; onDismiss: () => void }) {
   const Icon = feedback.tone === 'success' ? CheckCircle2 : feedback.tone === 'error' ? CircleAlert : ShieldCheck;
+
+  useEffect(() => {
+    if (feedback.tone !== 'success') {
+      return;
+    }
+    const timeout = window.setTimeout(onDismiss, 3200);
+    return () => window.clearTimeout(timeout);
+  }, [feedback, onDismiss]);
 
   return (
     <View
@@ -3980,7 +4051,7 @@ function InstallAppBanner() {
         <Smartphone color={colors.primary} size={21} />
       </View>
       <View style={styles.installCopy}>
-        <Text style={styles.installTitle}>Cài Cà phê Đạm</Text>
+        <Text style={styles.installTitle}>Cài ứng dụng</Text>
         <Text style={styles.installText}>
           {installPrompt
             ? 'Thêm vào màn hình chính để mở toàn màn hình như một ứng dụng.'
@@ -4117,7 +4188,7 @@ function AccountPanel({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const roleLabel = roleOptions.find((option) => option.key === profile.role)?.label ?? 'Nhân viên';
   const workplace = profile.role === 'owner' ? 'Toàn hệ thống' : getBranchById(profile.branchId ?? branchId).name;
-  const employmentLabel = profile.employmentType === 'full_time' ? 'Toàn thời gian' : 'Bán thời gian';
+  const employmentLabel = profile.employmentType === 'full_time' ? 'Full time' : 'Part time';
 
   useEffect(() => {
     setFullName(profile.fullName);
@@ -4229,14 +4300,20 @@ function AccountPanel({
       onProfileChange(nextProfile);
       setAvatarPreview(nextProfile.avatarUrl);
       setAvatarFile(null);
+      const changedFields = [
+        editableProfile.fullName !== profile.fullName ? 'Họ và tên' : '',
+        editableProfile.phone !== profile.phone ? 'Số điện thoại' : '',
+        editableProfile.dateOfBirth !== profile.dateOfBirth ? 'Ngày sinh' : '',
+        nextProfile.avatarUrl !== profile.avatarUrl ? 'Ảnh đại diện' : '',
+      ].filter(Boolean);
       setFeedback({
         tone: 'success',
-        title: 'Đã lưu hồ sơ',
+        title: changedFields.length ? `Đã cập nhật: ${changedFields.join(', ')}` : 'Không có thay đổi mới',
         message: localAvatarFallback
-          ? 'Tên và số điện thoại đã lưu. Ảnh đang được giữ trên điện thoại này.'
+          ? 'Ảnh đang được giữ trên thiết bị này.'
           : databaseSynced
-            ? 'Tên, số điện thoại và ảnh đại diện đã được cập nhật.'
-            : 'Tên và số điện thoại đã lưu. Một số thông tin sẽ được lưu lại khi kết nối ổn định.',
+            ? changedFields.join(', ')
+            : 'Một số thông tin sẽ được lưu lại khi kết nối ổn định.',
       });
     } catch (error) {
       const message = getFriendlyErrorMessage(error, 'Chưa lưu được thông tin cá nhân. Vui lòng thử lại.');
@@ -4381,7 +4458,7 @@ function AccountPanel({
 
           <View style={styles.accountSectionCard}>
             <View style={styles.accountSectionHeading}>
-              <ShieldCheck color={colors.primary} size={20} />
+              <LockKeyhole color={colors.primary} size={20} />
               <View style={styles.flex}>
                 <Text style={styles.accountSectionTitle}>Thông tin công việc</Text>
                 <Text style={styles.accountSectionHint}>Chỉ Chủ cửa hàng có quyền thay đổi các mục này.</Text>
@@ -4390,6 +4467,9 @@ function AccountPanel({
             <ProfileInfoRow icon={ShieldCheck} label="Vị trí" value={roleLabel} />
             <ProfileInfoRow icon={Store} label="Nơi làm việc" value={workplace} />
             <ProfileInfoRow icon={Clock3} label="Hình thức làm việc" value={employmentLabel} />
+            <ProfileInfoRow icon={WalletCards} label="Lương k/giờ" value={formatCurrency(profile.hourlyRate)} />
+            <ProfileInfoRow icon={WalletCards} label="Phụ cấp" value={formatCurrency(profile.allowance)} />
+            <ProfileInfoRow icon={WalletCards} label="Tiền ăn sáng" value={`${formatCurrency(profile.breakfastAllowance)} / ca sáng`} />
             <ProfileInfoRow
               icon={CalendarDays}
               label="Thâm niên"
@@ -4399,7 +4479,7 @@ function AccountPanel({
 
           <View style={styles.accountSectionCard}>
             <View style={styles.accountSectionHeading}>
-              <KeyRound color={colors.primary} size={20} />
+              <LockKeyhole color={colors.primary} size={20} />
               <View style={styles.flex}>
                 <Text style={styles.accountSectionTitle}>Bảo mật tài khoản</Text>
                 <Text style={styles.accountSectionHint}>Đổi mật khẩu hoặc đăng xuất khỏi thiết bị.</Text>
@@ -4476,8 +4556,11 @@ function OwnerStaffManager({
     setFeedback({ tone: 'info', title: 'Đang cập nhật nhân viên', message: 'Đang lưu thông tin làm việc...' });
     try {
       const nextProfile = await saveManagedProfile(selectedProfile.id, {
+        allowance: selectedProfile.allowance,
         branchId: role === 'owner' ? null : branchId,
+        breakfastAllowance: selectedProfile.breakfastAllowance,
         employmentType,
+        hourlyRate: selectedProfile.hourlyRate,
         role,
         startDate,
       });
@@ -4581,8 +4664,8 @@ function OwnerStaffManager({
                       onChange={(event) => setEmploymentType(event.target.value as EmploymentType)}
                       value={employmentType}
                     >
-                      <option value="full_time">Toàn thời gian</option>
-                      <option value="part_time">Bán thời gian</option>
+                      <option value="full_time">Full time</option>
+                      <option value="part_time">Part time</option>
                     </select>
                   </View>
 
@@ -5108,7 +5191,6 @@ function EmployeeAttendanceScreen({
         placeholder="Nhập tên nhân viên"
         value={employeeName}
       />
-      <AttendanceNotice editable={editable} monthKey={monthKey} sheet={sheet} />
       <AttendanceSheetTableV2
         editable={editable}
         employeeName={trimmedName}
@@ -5339,14 +5421,7 @@ function AttendanceNotice({
     );
   }
 
-  return (
-    <StatusPanel
-      icon={editable ? Clock3 : UserRound}
-      title={editable ? 'Đang mở chấm công' : 'Cần nhập tên nhân viên'}
-      text={editable ? 'Lịch làm sẽ tự điền giờ công; có thể kiểm tra ca sáng, ca chiều và mở cửa theo từng ngày.' : 'Tên nhân viên là khóa để lưu bảng công theo tháng.'}
-      tone={editable ? 'success' : 'neutral'}
-    />
-  );
+  return null;
 }
 
 function AttendanceSheetTable({
@@ -5860,27 +5935,18 @@ function AttendanceSheetTableV2({
 
   return (
     <>
-      <View style={styles.attendanceQuickCard}>
-        <View style={styles.attendanceQuickHeading}>
-          <Text style={styles.attendanceQuickTitle}>Bảng công theo lịch làm</Text>
-          <Text style={styles.attendanceQuickHint}>
-            Lịch đã gửi tự điền 6 giờ ca sáng, 5 giờ ca chiều và 0,5 giờ mở cửa. Có thể dán vùng dữ liệu từ bảng tính để điều chỉnh; chiều Chủ Nhật luôn khóa.
-          </Text>
-        </View>
-      </View>
-
       <View style={styles.attendanceTable}>
         <View style={[styles.attendanceRow, styles.attendanceHeaderRow]}>
           <Text style={[styles.attendanceCell, styles.attendanceDateCell]}>Ngày</Text>
           <Text style={[styles.attendanceCell, styles.attendanceWeekdayCell]}>Thứ</Text>
           <Text style={styles.attendanceCell}>Ca sáng</Text>
           <Text style={styles.attendanceCell}>Ca chiều</Text>
-          <Text style={styles.attendanceCell}>Mở cửa</Text>
         </View>
         {days.map((day) => {
           const dayKey = getAttendanceDayKey(monthKey, day);
           const sunday = isSundayAttendanceDay(monthKey, day);
           const value = sheet?.days[dayKey] ?? { morning: '', afternoon: '', opening: '' };
+          const morningValue = formatHoursInput(toNumber(value.morning) + toNumber(value.opening));
           const afternoonEditable = canEdit && !sunday;
 
           return (
@@ -5895,7 +5961,7 @@ function AttendanceSheetTableV2({
                 placeholder="0"
                 placeholderTextColor="#9A806B"
                 style={[styles.attendanceInput, !canEdit && styles.attendanceInputReadonly]}
-                value={value.morning}
+                value={morningValue}
               />
               <TextInput
                 editable={afternoonEditable}
@@ -5906,16 +5972,6 @@ function AttendanceSheetTableV2({
                 placeholderTextColor="#9A806B"
                 style={[styles.attendanceInput, !afternoonEditable && styles.attendanceInputReadonly, sunday && styles.attendanceSundayInput]}
                 value={value.afternoon}
-              />
-              <TextInput
-                editable={canEdit}
-                keyboardType={decimalKeyboard}
-                onChangeText={(inputValue) => onUpdateCell(employeeName, dayKey, 'opening', inputValue, targetUserId)}
-                onPaste={(event) => handlePaste(event, day, 'opening')}
-                placeholder="0"
-                placeholderTextColor="#9A806B"
-                style={[styles.attendanceInput, !canEdit && styles.attendanceInputReadonly]}
-                value={value.opening}
               />
             </View>
           );
@@ -5930,7 +5986,6 @@ function PayrollSummary({ payroll }: { payroll: ReturnType<typeof calculatePayro
     <View style={styles.payrollSummary}>
       <SummaryLine label="Tổng ca sáng" value={payroll.morningShifts.toString()} />
       <SummaryLine label="Tổng ca chiều" value={payroll.afternoonShifts.toString()} />
-      <SummaryLine label="Giờ mở cửa" value={formatNumber(payroll.openingHours)} />
       <SummaryLine label="Tổng giờ làm" value={formatNumber(payroll.totalHours)} />
       <SummaryLine label="Tiền ăn sáng" value={formatCurrency(payroll.breakfastMoney)} />
       <SummaryLine label="Phụ cấp" value={formatCurrency(payroll.allowanceMoney)} />
@@ -5949,7 +6004,6 @@ function PayrollAggregateSummary({
       <SummaryLine label="Nhân viên đã gửi" value={aggregate.employees.toString()} />
       <SummaryLine label="Ca sáng" value={aggregate.morningShifts.toString()} />
       <SummaryLine label="Ca chiều" value={aggregate.afternoonShifts.toString()} />
-      <SummaryLine label="Giờ mở cửa" value={formatNumber(aggregate.openingHours)} />
       <SummaryLine label="Tổng giờ" value={formatNumber(aggregate.totalHours)} />
       <SummaryLine label="Tổng lương" strong value={formatCurrency(aggregate.totalMoney)} />
     </View>
@@ -6193,6 +6247,16 @@ const formatSupplyReportSummary = (report: IngredientReport) => {
   return `Dùng ${formatNumber(report.used ?? 0)} ${report.unit ?? ''} - tồn ${formatNumber(report.currentStock ?? 0)} ${report.unit ?? ''}`;
 };
 
+const buildSupplyShareText = (branch: Branch, report: IngredientReport) => {
+  const itemLines = (report.items ?? [])
+    .map((item) => formatSupplyItemValue(item))
+    .filter((line) => !line.includes('chưa nhập'));
+  const noteLine = report.note.trim() ? `Ghi chú: ${report.note.trim()}` : '';
+  const body = [...itemLines, noteLine].filter(Boolean).join('\n') || 'Tất cả còn đủ';
+
+  return `Dạ em báo đồ ${branch.name} ạ:\n${body}`;
+};
+
 function IngredientScreen({
   note,
   onNoteChange,
@@ -6204,7 +6268,7 @@ function IngredientScreen({
   note: string;
   onNoteChange: (value: string) => void;
   onRowChange: (key: string, patch: Partial<SupplyItemInput>) => void;
-  onSave: () => void;
+  onSave: () => void | Promise<void>;
   records: IngredientReport[];
   rows: Record<string, SupplyItemInput>;
 }) {
@@ -6217,26 +6281,30 @@ function IngredientScreen({
 
       <View style={styles.supplySection}>
         <Text style={styles.supplySectionTitle}>Có số lượng</Text>
-        {quantityItems.map((item) => (
-          <SupplyItemRow
-            item={item}
-            key={item.key}
-            onChange={(patch) => onRowChange(item.key, patch)}
-            value={rows[item.key] ?? { quantity: '', status: 'available' }}
-          />
-        ))}
+        <View style={styles.supplyGrid}>
+          {quantityItems.map((item) => (
+            <SupplyItemRow
+              item={item}
+              key={item.key}
+              onChange={(patch) => onRowChange(item.key, patch)}
+              value={rows[item.key] ?? { quantity: '', status: 'available' }}
+            />
+          ))}
+        </View>
       </View>
 
       <View style={styles.supplySection}>
         <Text style={styles.supplySectionTitle}>Chỉ trạng thái</Text>
-        {statusItems.map((item) => (
-          <SupplyItemRow
-            item={item}
-            key={item.key}
-            onChange={(patch) => onRowChange(item.key, patch)}
-            value={rows[item.key] ?? { quantity: '', status: 'available' }}
-          />
-        ))}
+        <View style={styles.supplyGrid}>
+          {statusItems.map((item) => (
+            <SupplyItemRow
+              item={item}
+              key={item.key}
+              onChange={(patch) => onRowChange(item.key, patch)}
+              value={rows[item.key] ?? { quantity: '', status: 'available' }}
+            />
+          ))}
+        </View>
       </View>
 
       <FormField
@@ -6247,7 +6315,7 @@ function IngredientScreen({
         value={note}
       />
 
-      <PrimaryButton icon={Save} label="Lưu báo đồ" onPress={onSave} tone="primary" />
+      <PrimaryButton icon={Save} label="Gửi báo đồ" onPress={onSave} tone="primary" />
 
       <HistoryList
         emptyText="Chưa có báo đồ."
@@ -6286,21 +6354,7 @@ function SupplyItemRow({
           {item.unit ? <Text style={styles.supplyItemUnit}>Đơn vị: {item.unit}</Text> : null}
         </View>
 
-        {item.kind === 'quantity' ? (
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => onChange({ status: isEmpty ? 'available' : 'empty' })}
-            style={({ pressed }) => [
-              styles.supplyStatusButton,
-              isEmpty && styles.supplyStatusButtonEmpty,
-              pressed && styles.pressed,
-            ]}
-          >
-            <Text style={[styles.supplyStatusButtonText, isEmpty && styles.supplyStatusButtonTextEmpty]}>Hết</Text>
-          </Pressable>
-        ) : (
-          <SupplyStatusSwitch status={value.status} onChange={(status) => onChange({ status })} />
-        )}
+        <SupplyStatusSwitch status={value.status} onChange={(status) => onChange({ status })} />
       </View>
 
       {item.kind === 'quantity' ? (
@@ -6327,36 +6381,20 @@ function SupplyStatusSwitch({
   onChange: (status: SupplyItemStatus) => void;
   status: SupplyItemStatus;
 }) {
-  return (
-    <View style={styles.supplyStatusSwitch}>
-      {(['available', 'empty'] as SupplyItemStatus[]).map((itemStatus) => {
-        const active = status === itemStatus;
+  const isEmpty = status === 'empty';
 
-        return (
-          <Pressable
-            accessibilityRole="button"
-            key={itemStatus}
-            onPress={() => onChange(itemStatus)}
-            style={({ pressed }) => [
-              styles.supplyStatusOption,
-              active && styles.supplyStatusOptionActive,
-              itemStatus === 'empty' && active && styles.supplyStatusOptionEmpty,
-              pressed && styles.pressed,
-            ]}
-          >
-            <Text
-              style={[
-                styles.supplyStatusOptionText,
-                active && styles.supplyStatusOptionTextActive,
-                itemStatus === 'empty' && active && styles.supplyStatusOptionTextEmpty,
-              ]}
-            >
-              {itemStatus === 'available' ? 'Còn' : 'Hết'}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={() => onChange(isEmpty ? 'available' : 'empty')}
+      style={({ pressed }) => [
+        styles.supplyStatusToggle,
+        isEmpty ? styles.supplyStatusToggleEmpty : styles.supplyStatusToggleAvailable,
+        pressed && styles.pressed,
+      ]}
+    >
+      <Text style={styles.supplyStatusToggleText}>{isEmpty ? 'Hết' : 'Còn'}</Text>
+    </Pressable>
   );
 }
 
@@ -6434,10 +6472,6 @@ function ClosingScreen({
   return (
     <View style={styles.screen}>
       <SectionTitle icon={DoorClosed} title="Báo ca" />
-
-      <View style={styles.requiredNotice}>
-        <Text style={styles.requiredNoticeText}>Lưu ý: Ô có dấu * là thông tin chính, có thể để trống nếu chưa có dữ liệu.</Text>
-      </View>
 
       <View style={styles.closingForm}>
         <PlasticCupSection errors={errors} onChange={onPlasticCupChange} rows={plasticCupRows} />
@@ -8155,8 +8189,8 @@ const styles = StyleSheet.create({
   },
   signOutButton: {
     alignItems: 'center',
-    backgroundColor: colors.surfaceSoft,
-    borderColor: colors.line,
+    backgroundColor: colors.rose,
+    borderColor: colors.rose,
     borderRadius: 999,
     borderWidth: 1,
     justifyContent: 'center',
@@ -8164,7 +8198,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   signOutText: {
-    color: colors.primary,
+    color: colors.onDark,
     fontSize: 12,
     fontWeight: '900',
     letterSpacing: 0,
@@ -9468,6 +9502,11 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 0,
   },
+  supplyGrid: {
+    display: 'grid',
+    gap: 9,
+    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+  },
   supplyItemRow: {
     backgroundColor: colors.surface,
     borderColor: colors.line,
@@ -9543,6 +9582,26 @@ const styles = StyleSheet.create({
   },
   supplyStatusButtonTextEmpty: {
     color: colors.rose,
+  },
+  supplyStatusToggle: {
+    alignItems: 'center',
+    borderRadius: 999,
+    minHeight: 34,
+    minWidth: 58,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  supplyStatusToggleAvailable: {
+    backgroundColor: colors.blue,
+  },
+  supplyStatusToggleEmpty: {
+    backgroundColor: colors.rose,
+  },
+  supplyStatusToggleText: {
+    color: colors.onDark,
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0,
   },
   supplyStatusSwitch: {
     backgroundColor: colors.surfaceStrong,

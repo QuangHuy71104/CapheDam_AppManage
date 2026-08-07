@@ -14,6 +14,9 @@ export type ManagedStaffProfile = {
   employmentType: EmploymentType;
   startDate: string;
   dateOfBirth: string;
+  hourlyRate: number;
+  allowance: number;
+  breakfastAllowance: number;
 };
 
 export type StaffBranchAlias = {
@@ -94,12 +97,15 @@ export const loadStaffManagement = () => callAccountApi<StaffManagementData>('GE
 
 export const saveManagedWorkProfile = async (
   id: string,
-  patch: Pick<ManagedStaffProfile, 'branchId' | 'employmentType' | 'role' | 'startDate'>,
+  patch: Pick<ManagedStaffProfile, 'allowance' | 'branchId' | 'breakfastAllowance' | 'employmentType' | 'hourlyRate' | 'role' | 'startDate'>,
 ) => {
   const result = await callAccountApi<{ profile: ManagedStaffProfile }>('PATCH', {
     action: 'save-work',
+    allowance: patch.allowance,
     branchId: patch.role === 'owner' ? null : patch.branchId,
+    breakfastAllowance: patch.breakfastAllowance,
     employmentType: patch.employmentType,
+    hourlyRate: patch.hourlyRate,
     role: patch.role,
     startDate: patch.startDate,
     targetId: id,
