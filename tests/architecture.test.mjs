@@ -37,3 +37,16 @@ test('database migration baseline exists', () => {
     true,
   );
 });
+
+
+test('inventory persistence bypasses aggregate snapshot sync', () => {
+  const syncStart = app.indexOf('const syncAppDataToSupabase');
+  const syncEnd = app.indexOf('const autoConfirmEligiblePayrolls', syncStart);
+  assert.notEqual(syncStart, -1);
+  assert.notEqual(syncEnd, -1);
+  assert.doesNotMatch(app.slice(syncStart, syncEnd), /ingredient_reports/);
+  assert.match(app, /persistIngredientReport\(report\)/);
+  const repository = readFileSync(new URL('../src/features/inventory/repository.ts', import.meta.url), 'utf8');
+  assert.match(repository, /from\('ingredient_reports'\)\.upsert/);
+  assert.match(repository, /listIngredientReports/);
+});

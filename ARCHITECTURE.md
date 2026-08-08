@@ -39,3 +39,11 @@ must be migrated with concurrency tests.
 A UI action labelled refresh must never delete persisted operational records.
 Destructive maintenance tools, if ever required, belong behind explicit admin
 flows and server-side authorization.
+
+## Phase 2 migration status
+
+Inventory (`ingredient_reports`) is the first domain removed from aggregate
+snapshot persistence. Reads and writes are owned by
+`src/features/inventory/repository.ts`. `AppData.ingredients` remains
+temporarily as a UI cache; new inventory writes must not be added back to
+`syncAppDataToSupabase`.
