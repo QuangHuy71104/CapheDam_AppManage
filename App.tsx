@@ -127,6 +127,7 @@ import {
   getBranchPayrollConfirmation,
   invalidateBranchPayroll,
 } from './src/features/payroll/domain';
+import { listBranchPayrollConfirmations, saveBranchPayrollConfirmations } from './src/features/payroll/repository';
 import {
   initialData,
   normalizeAppData,
@@ -729,36 +730,9 @@ const uploadProfileAvatar = async (profileId: string, image: Blob) => {
   return result.avatarUrl;
 };
 
-const applyBranchScope = (tableName: 'branch_payroll_confirmations', profile: UserProfile) => {
-  let request = supabase.from(tableName).select('*');
-
-  if (profile.role !== 'owner' && profile.branchId) {
-    request = request.eq('branch_id', profile.branchId);
-  }
-
-  return request;
-};
-
 const loadAppDataFromSupabase = async (profile: UserProfile): Promise<AppData> => {
   const attendanceSheets = await listAttendanceSheets(profile);
-  const payrollResult =
-    profile.role === 'employee'
-      ? { data: [], error: null }
-      : await applyBranchScope('branch_payroll_confirmations', profile).order('month_key', { ascending: false });
-
-  const branchPayrolls: BranchPayrollConfirmation[] = (payrollResult.data ?? []).map((item) => {
-    const row = item as Record<string, unknown>;
-
-    return {
-      id: String(row.id),
-      branchId: String(row.branch_id),
-      monthKey: String(row.month_key),
-      managerConfirmedAt: typeof row.manager_confirmed_at === 'string' ? row.manager_confirmed_at : undefined,
-      managerCancelledAt: typeof row.manager_cancelled_at === 'string' ? row.manager_cancelled_at : undefined,
-      managerName: typeof row.manager_name === 'string' ? row.manager_name : undefined,
-      autoConfirmed: Boolean(row.auto_confirmed),
-    };
-  });
+  const branchPayrolls = await listBranchPayrollConfirmations(profile);
 
   return normalizeAppData({
     attendanceSheets,
@@ -811,45 +785,6 @@ const getFriendlyErrorMessage = (error: unknown, fallback = 'Chưa thực hiện
   }
 
   return fallback;
-};
-
-const formatSupabaseError = (error: unknown) => {
-  return getFriendlyErrorMessage(error, 'Chưa lưu được. Vui lòng thử lại.');
-};
-
-const upsertSupabaseRows = async (tableName: string, rows: Record<string, unknown>[]) => {
-  if (rows.length === 0) {
-    return;
-  }
-
-  const chunkSize = 50;
-  for (let offset = 0; offset < rows.length; offset += chunkSize) {
-    const chunk = rows.slice(offset, offset + chunkSize);
-    const { error } = await supabase.from(tableName).upsert(chunk, { onConflict: 'id' });
-
-    if (!error) {
-      continue;
-    }
-
-    // A single legacy/invalid record must not prevent every valid row in the
-    // same table from syncing. Retry rows individually to isolate the cause.
-    const failedRows: string[] = [];
-    let firstError: unknown = error;
-    for (const row of chunk) {
-      const { error: rowError } = await supabase.from(tableName).upsert(row, { onConflict: 'id' });
-      if (rowError) {
-        firstError = rowError;
-        failedRows.push(typeof row.id === 'string' ? row.id : 'không có mã');
-      }
-    }
-
-    if (failedRows.length > 0) {
-      throw new Error(
-        `${syncTableLabels[tableName] ?? 'Dữ liệu'}: ${formatSupabaseError(firstError)} ` +
-          `Có ${failedRows.length} mục chưa lưu được.`,
-      );
-    }
-  }
 };
 
 const deduplicateAttendanceSheets = (sheets: AttendanceSheet[]) => {
@@ -933,24 +868,14 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, sna
   const changedAttendance = changedSinceSnapshot(scopedAttendance, snapshotAttendance);
   const changedPayrolls = changedSinceSnapshot(scopedPayrolls, snapshotPayrolls);
 
-  const payrollRows = changedPayrolls.map((confirmation) => ({
-    id: confirmation.id,
-    branch_id: confirmation.branchId,
-    month_key: confirmation.monthKey,
-    manager_confirmed_at: confirmation.managerConfirmedAt ?? null,
-    manager_cancelled_at: confirmation.managerCancelledAt ?? null,
-    manager_name: confirmation.managerName ?? null,
-    auto_confirmed: Boolean(confirmation.autoConfirmed),
-    updated_at: updatedAt,
-  }));
   const results = await Promise.allSettled([
     saveAttendanceSheets(changedAttendance, profile),
-    upsertSupabaseRows('branch_payroll_confirmations', payrollRows),
+    saveBranchPayrollConfirmations(changedPayrolls),
   ]);
 
   const errors = results
     .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-    .map((result) => (result.reason instanceof Error ? result.reason.message : formatSupabaseError(result.reason)));
+    .map((result) => (result.reason instanceof Error ? result.reason.message : 'Chưa lưu được dữ liệu.'));
 
   if (errors.length > 0) {
     throw new Error(errors.join('\n'));
