@@ -1539,25 +1539,6 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, sna
   }
 };
 
-const clearRemoteAppData = async () => {
-  const tableNames = [
-    'work_schedules',
-    'shift_close_reports',
-    'ingredient_reports',
-    'branch_payroll_confirmations',
-    'attendance_sheets',
-  ];
-
-  await Promise.all(
-    tableNames.map(async (tableName) => {
-      const { error } = await supabase.from(tableName).delete().neq('id', '__never__');
-
-      if (error) {
-        throw error;
-      }
-    }),
-  );
-};
 
 const autoConfirmEligiblePayrolls = (current: AppData, now = new Date()) => {
   const nextConfirmations = [...current.branchPayrolls];
@@ -3140,23 +3121,6 @@ export default function App() {
     };
   }, [pendingClosingExport]);
 
-  const clearAllData = () => {
-    Alert.alert('Xóa dữ liệu?', 'Dữ liệu thuộc tài khoản hiện tại sẽ bị xóa khỏi điện thoại và hệ thống.', [
-      { text: 'Hủy', style: 'cancel' },
-      {
-        text: 'Xóa',
-        style: 'destructive',
-        onPress: () => {
-          setData(initialData);
-          remoteSnapshotRef.current = JSON.stringify(initialData);
-          clearRemoteAppData().catch((error) => {
-            const message = getFriendlyErrorMessage(error, 'Chưa xóa được dữ liệu. Vui lòng thử lại.');
-            Alert.alert('Chưa xóa được', message);
-          });
-        },
-      },
-    ]);
-  };
 
   const signOut = () => {
     setAccountOpen(false);
@@ -3209,7 +3173,7 @@ export default function App() {
                 <Pressable
                   accessibilityLabel="Làm mới dữ liệu hệ thống"
                   accessibilityRole="button"
-                  onPress={clearAllData}
+                  onPress={() => void refreshRemoteData()}
                   style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
                 >
                   <RefreshCcw color={colors.muted} size={18} />
