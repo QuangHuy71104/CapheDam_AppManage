@@ -40,32 +40,28 @@ test('database migration baseline exists', () => {
 
 
 test('inventory persistence bypasses aggregate snapshot sync', () => {
-  const syncStart = app.indexOf('const syncAppDataToSupabase');
-  const syncEnd = app.indexOf('const autoConfirmEligiblePayrolls', syncStart);
-  assert.notEqual(syncStart, -1);
-  assert.notEqual(syncEnd, -1);
-  assert.doesNotMatch(app.slice(syncStart, syncEnd), /ingredient_reports/);
+  assert.doesNotMatch(app, /const syncAppDataToSupabase/);
   assert.match(app, /persistIngredientReport\(report\)/);
-  const repository = readFileSync(new URL('../src/features/inventory/repository.ts', import.meta.url), 'utf8');
+
+  const repository = readFileSync(
+    new URL('../src/features/inventory/repository.ts', import.meta.url),
+    'utf8',
+  );
+
   assert.match(repository, /from\('ingredient_reports'\)\.upsert/);
   assert.match(repository, /listIngredientReports/);
 });
 
 
 test('closing persistence bypasses aggregate snapshot sync', () => {
-  const syncStart = app.indexOf('const syncAppDataToSupabase');
-  const syncEnd = app.indexOf('const autoConfirmEligiblePayrolls', syncStart);
-  assert.notEqual(syncStart, -1);
-  assert.notEqual(syncEnd, -1);
-
-  const aggregateSync = app.slice(syncStart, syncEnd);
-  assert.doesNotMatch(aggregateSync, /shift_close_reports/);
+  assert.doesNotMatch(app, /const syncAppDataToSupabase/);
   assert.match(app, /persistShiftCloseReport\(report\)/);
 
   const repository = readFileSync(
     new URL('../src/features/closing/repository.ts', import.meta.url),
     'utf8',
   );
+
   assert.match(repository, /from\('shift_close_reports'\)\.upsert/);
   assert.match(repository, /listShiftCloseReports/);
 });
@@ -100,4 +96,16 @@ test('payroll confirmation persistence is feature-owned', () => {
   assert.match(repository, /listBranchPayrollConfirmations/);
   assert.match(repository, /from\('branch_payroll_confirmations'\)/);
   assert.match(repository, /\.upsert/);
+});
+
+
+test('payroll workspace sync is outside App', () => {
+  assert.doesNotMatch(app, /const syncAppDataToSupabase/);
+  assert.match(app, /syncPayrollWorkspace\(currentData, activeProfile, remoteSnapshot\)/);
+  const sync = readFileSync(
+    new URL('../src/features/payroll/workspace-sync.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(sync, /saveAttendanceSheets/);
+  assert.match(sync, /saveBranchPayrollConfirmations/);
 });

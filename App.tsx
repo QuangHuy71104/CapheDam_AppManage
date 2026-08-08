@@ -120,14 +120,15 @@ import type {
   AttendanceSheet,
   BranchPayrollConfirmation,
 } from './src/features/attendance/model';
-import { listAttendanceSheets, saveAttendanceSheets } from './src/features/attendance/repository';
+import { listAttendanceSheets } from './src/features/attendance/repository';
 import {
   calculateBranchPayroll,
   calculatePayroll,
   getBranchPayrollConfirmation,
   invalidateBranchPayroll,
 } from './src/features/payroll/domain';
-import { listBranchPayrollConfirmations, saveBranchPayrollConfirmations } from './src/features/payroll/repository';
+import { listBranchPayrollConfirmations } from './src/features/payroll/repository';
+import { syncPayrollWorkspace } from './src/features/payroll/workspace-sync';
 import {
   initialData,
   normalizeAppData,
@@ -786,102 +787,6 @@ const getFriendlyErrorMessage = (error: unknown, fallback = 'Chưa thực hiện
 
   return fallback;
 };
-
-const deduplicateAttendanceSheets = (sheets: AttendanceSheet[]) => {
-  const uniqueSheets = new Map<string, AttendanceSheet>();
-
-  sheets.forEach((sheet) => {
-    const employeeName = sheet.employeeName.trim();
-    if (!employeeName || !/^\d{4}-\d{2}$/.test(sheet.monthKey)) {
-      return;
-    }
-    const key = `${sheet.branchId}|${sheet.monthKey}|${
-      sheet.userId ? `user:${sheet.userId}` : `name:${employeeName.toLocaleLowerCase('vi-VN')}`
-    }`;
-    const existing = uniqueSheets.get(key);
-    if (!existing) {
-      uniqueSheets.set(key, { ...sheet, employeeName });
-      return;
-    }
-
-    const preferred = sheet.userId && !existing.userId ? sheet : existing;
-    const secondary = preferred === sheet ? existing : sheet;
-    uniqueSheets.set(key, {
-      ...preferred,
-      days: { ...secondary.days, ...preferred.days },
-      employeeConfirmedAt: preferred.employeeConfirmedAt ?? secondary.employeeConfirmedAt,
-      managerApprovedAt: preferred.managerApprovedAt ?? secondary.managerApprovedAt,
-      managerApprovedBy: preferred.managerApprovedBy ?? secondary.managerApprovedBy,
-      userId: preferred.userId ?? secondary.userId,
-    });
-  });
-
-  return [...uniqueSheets.values()];
-};
-
-const deduplicateBranchPayrolls = (confirmations: BranchPayrollConfirmation[]) => {
-  const uniqueConfirmations = new Map<string, BranchPayrollConfirmation>();
-  confirmations.forEach((confirmation) => {
-    if (!/^\d{4}-\d{2}$/.test(confirmation.monthKey)) {
-      return;
-    }
-    const key = `${confirmation.branchId}|${confirmation.monthKey}`;
-    const existing = uniqueConfirmations.get(key);
-    if (!existing || (!existing.managerConfirmedAt && confirmation.managerConfirmedAt)) {
-      uniqueConfirmations.set(key, confirmation);
-    }
-  });
-  return [...uniqueConfirmations.values()];
-};
-
-const changedSinceSnapshot = <T extends { id: string }>(current: T[], snapshot: T[]) => {
-  const snapshotById = new Map(snapshot.map((item) => [item.id, item]));
-  return current.filter((item) => JSON.stringify(item) !== JSON.stringify(snapshotById.get(item.id)));
-};
-
-const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, snapshot: AppData = initialData) => {
-  const updatedAt = new Date().toISOString();
-  const scopedAttendance = deduplicateAttendanceSheets(current.attendanceSheets).filter((sheet) =>
-    profile.role === 'owner'
-      ? true
-      : profile.role === 'manager'
-        ? sheet.branchId === profile.branchId
-        : sheet.userId === profile.id ||
-          (sheet.branchId === profile.branchId && sheet.employeeName.trim().toLowerCase() === profile.fullName.trim().toLowerCase()),
-  );
-  const snapshotAttendance = deduplicateAttendanceSheets(snapshot.attendanceSheets).filter((sheet) =>
-    profile.role === 'owner'
-      ? true
-      : profile.role === 'manager'
-        ? sheet.branchId === profile.branchId
-        : sheet.userId === profile.id ||
-          (sheet.branchId === profile.branchId && sheet.employeeName.trim().toLowerCase() === profile.fullName.trim().toLowerCase()),
-  );
-  const scopedPayrolls = deduplicateBranchPayrolls(current.branchPayrolls).filter((confirmation) =>
-    profile.role === 'owner' ? true : profile.role === 'manager' && confirmation.branchId === profile.branchId,
-  );
-  const snapshotPayrolls = deduplicateBranchPayrolls(snapshot.branchPayrolls).filter((confirmation) =>
-    profile.role === 'owner' ? true : profile.role === 'manager' && confirmation.branchId === profile.branchId,
-  );
-  // Only send local changes. Re-upserting every row from a manager's old
-  // snapshot can otherwise clear an employee confirmation made elsewhere.
-  const changedAttendance = changedSinceSnapshot(scopedAttendance, snapshotAttendance);
-  const changedPayrolls = changedSinceSnapshot(scopedPayrolls, snapshotPayrolls);
-
-  const results = await Promise.allSettled([
-    saveAttendanceSheets(changedAttendance, profile),
-    saveBranchPayrollConfirmations(changedPayrolls),
-  ]);
-
-  const errors = results
-    .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-    .map((result) => (result.reason instanceof Error ? result.reason.message : 'Chưa lưu được dữ liệu.'));
-
-  if (errors.length > 0) {
-    throw new Error(errors.join('\n'));
-  }
-};
-
 
 const autoConfirmEligiblePayrolls = (current: AppData, now = new Date()) => {
   const nextConfirmations = [...current.branchPayrolls];
@@ -1778,7 +1683,7 @@ export default function App() {
             } catch {
               // A first local change can happen before a snapshot is available.
             }
-            await syncAppDataToSupabase(currentData, activeProfile, remoteSnapshot);
+            await syncPayrollWorkspace(currentData, activeProfile, remoteSnapshot);
 
             if (!cancelled && JSON.stringify(latestDataRef.current) === currentSnapshot) {
               remoteSnapshotRef.current = currentSnapshot;

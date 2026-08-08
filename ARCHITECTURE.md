@@ -58,3 +58,10 @@ as a UI cache and must not be reintroduced into `syncAppDataToSupabase`.
 Report UI caches are now independent from the offline payroll workspace.
 Inventory and Closing are never serialized inside legacy AppData/localStorage.
 Their source of truth is Supabase through their feature repositories.
+
+## Payroll workspace synchronization
+
+Payroll workspace synchronization is feature-owned under
+`src/features/payroll/workspace-sync.ts`. App.tsx no longer contains table
+upsert/deduplication logic. The remaining snapshot is an offline payroll
+workspace only, not a copy of report tables.
