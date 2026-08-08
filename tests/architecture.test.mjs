@@ -78,3 +78,14 @@ test('report caches are outside legacy AppData', () => {
   assert.match(app, /useState<IngredientReport\[\]>\(\[\]\)/);
   assert.match(app, /useState<ShiftCloseReport\[\]>\(\[\]\)/);
 });
+
+
+test('attendance persistence is feature-owned', () => {
+  assert.doesNotMatch(app, /\.from\('attendance_sheets'\)/);
+  const repository = readFileSync(
+    new URL('../src/features/attendance/repository.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(repository, /listAttendanceSheets/);
+  assert.match(repository, /from\('attendance_sheets'\)\.upsert/);
+});
