@@ -65,6 +65,16 @@ import {
   type StaffBranchAlias,
 } from './lib/staff-management';
 
+import { colors } from './src/shared/ui/theme';
+import {
+  formatTransferExpression,
+  isNumericText,
+  sanitizeDigits,
+  sanitizeShiftHours,
+  sumTransferExpression,
+  toNumber,
+  trimTransferExpression,
+} from './src/shared/lib/numbers';
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients' | 'staffManagement' | 'schedule';
 type AppPage = { key: 'main' } | { key: 'managerPayrollEmployee'; employeeId: string };
 type UserRole = 'owner' | 'manager' | 'employee';
@@ -423,67 +433,8 @@ const managerTabItems: Array<{
 const getTabItemsForRole = (role: UserRole) =>
   role === 'owner' ? ownerTabItems : role === 'manager' ? managerTabItems : employeeTabItems;
 
-const colors = {
-  background: '#F5EDE1',
-  canvasDeep: '#ECDFCD',
-  surface: '#FFF9F1',
-  surfaceStrong: '#FFFCF7',
-  surfaceSoft: '#F3E9DA',
-  surfaceTint: '#EEE1CD',
-  ink: '#23160F',
-  muted: '#6F5847',
-  line: 'rgba(93, 61, 39, 0.16)',
-  lineStrong: 'rgba(93, 61, 39, 0.25)',
-  primary: '#5F3723',
-  primarySoft: '#E7D3B8',
-  amber: '#B96524',
-  amberSoft: '#F6E3C8',
-  rose: '#B4483C',
-  roseSoft: '#F3DDD8',
-  blue: '#617055',
-  blueSoft: '#DCE8D7',
-  accent: '#B97849',
-  accentSoft: '#F1D6BD',
-  deep: '#3F2416',
-  dark: '#24170F',
-  gold: '#E7B640',
-  onDark: '#FFF8EE',
-};
 
 const createId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-
-const toNumber = (value: string) => {
-  const normalized = value.replace(',', '.').trim();
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : 0;
-};
-
-const isNumericText = (value: string) => {
-  const normalized = value.replace(',', '.').trim();
-  return normalized.length > 0 && Number.isFinite(Number(normalized));
-};
-
-const sanitizeDigits = (value: string) => value.replace(/\D/g, '');
-
-const sanitizeShiftHours = (value: string) => {
-  const normalized = value.replace(/[^\d,.]/g, '').replace(/\./g, ',');
-  const [whole, ...decimalParts] = normalized.split(',');
-  const decimals = decimalParts.join('');
-
-  return decimalParts.length > 0 ? `${whole},${decimals.slice(0, 2)}` : whole;
-};
-
-const formatTransferExpression = (value: string) =>
-  value.replace(/[^\d+]/g, '').replace(/\++/g, '+').replace(/^\++/, '');
-
-const trimTransferExpression = (value: string) => value.replace(/\++$/g, '');
-
-const sumTransferExpression = (value: string) =>
-  trimTransferExpression(value)
-    .split('+')
-    .map((part) => Number(part))
-    .filter((part) => Number.isFinite(part))
-    .reduce((total, part) => total + part, 0);
 
 const deriveCupBalance = (row: PlasticCupInput): Pick<PlasticCupInput, 'status' | 'variance'> => {
   if (!isNumericText(row.opening) || !isNumericText(row.remaining) || !isNumericText(row.machineCups)) {
