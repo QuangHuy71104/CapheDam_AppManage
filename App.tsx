@@ -122,6 +122,14 @@ import {
   getBranchPayrollConfirmation,
   invalidateBranchPayroll,
 } from './src/features/payroll/domain';
+import {
+  initialData,
+  normalizeAppData,
+  type AppData,
+  type AttendanceEvent,
+  type IngredientReport,
+  type ShiftCloseReport,
+} from './src/app/legacy-app-data';
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients' | 'staffManagement' | 'schedule';
 type AppPage = { key: 'main' } | { key: 'managerPayrollEmployee'; employeeId: string };
 type AuthFeedback = {
@@ -134,68 +142,9 @@ type BeforeInstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 };
 type AttendanceType = 'clockIn' | 'clockOut';
-type AttendanceEvent = {
-  id: string;
-  employeeName: string;
-  note: string;
-  timestamp: string;
-  type: AttendanceType;
-};
 
-type IngredientReport = {
-  id: string;
-  branchId?: string;
-  reporterName?: string;
-  reporterRole?: UserRole;
-  itemName?: string;
-  unit?: string;
-  openingStock?: number;
-  received?: number;
-  used?: number;
-  wasted?: number;
-  currentStock?: number;
-  note: string;
-  timestamp: string;
-  items?: SupplyReportItem[];
-};
 
-type ShiftCloseReport = {
-  id: string;
-  branchId?: string;
-  plasticCups?: string;
-  plasticCupRows?: PlasticCupReport[];
-  cornMilk?: string;
-  cornMilkReport?: StockBalanceReport;
-  glassCups?: string;
-  smallBottles?: string;
-  largeBottles?: string;
-  coffeePacks?: string;
-  smallCoffeePacks?: string;
-  largeCoffeePacks?: string;
-  machineMoney: string;
-  storeMoney: string;
-  transferMoney?: string;
-  shopeeMoney?: string;
-  bankTransferMoney?: string;
-  bankTransferTotal?: number;
-  iceBags?: string;
-  waterBottles?: string;
-  cardTopupMoney?: string;
-  note: string;
-  timestamp: string;
-  cashierName?: string;
-  shiftName?: string;
-  revenue?: number;
-  discrepancy?: number;
-};
 
-type AppData = {
-  attendance: AttendanceEvent[];
-  attendanceSheets: AttendanceSheet[];
-  branchPayrolls: BranchPayrollConfirmation[];
-  ingredients: IngredientReport[];
-  closings: ShiftCloseReport[];
-};
 
 
 type PendingSignupDraft = {
@@ -209,13 +158,6 @@ const STORAGE_KEY = 'caphedam-appmanage-v1';
 const PROFILE_OVERRIDE_PREFIX = 'caphedam-profile-override-';
 const logoImage = new URL('./assets/logo.jpg', import.meta.url).href;
 
-const initialData: AppData = {
-  attendance: [],
-  attendanceSheets: [],
-  branchPayrolls: [],
-  ingredients: [],
-  closings: [],
-};
 
 const roleOptions: Array<{ key: UserRole; label: string; description: string; icon: typeof Clock3 }> = [
   {
@@ -485,14 +427,6 @@ const updateSheetCollection = (
 
   return sheets.map((sheet, sheetIndex) => (sheetIndex === index ? nextSheet : sheet));
 };
-
-const normalizeAppData = (value: Partial<AppData> | null | undefined): AppData => ({
-  attendance: Array.isArray(value?.attendance) ? value.attendance : [],
-  attendanceSheets: Array.isArray(value?.attendanceSheets) ? value.attendanceSheets : [],
-  branchPayrolls: Array.isArray(value?.branchPayrolls) ? value.branchPayrolls : [],
-  ingredients: Array.isArray(value?.ingredients) ? value.ingredients : [],
-  closings: Array.isArray(value?.closings) ? value.closings : [],
-});
 
 const normalizeRole = (value: unknown): UserRole =>
   value === 'owner' || value === 'manager' || value === 'employee' ? value : 'employee';
