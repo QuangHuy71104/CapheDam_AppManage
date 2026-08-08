@@ -71,3 +71,12 @@ The generic legacy AppData boundary has been retired. Inventory, Closing,
 Attendance and Payroll persistence are owned by feature repositories. The only
 local snapshot that remains is the attendance/payroll workspace used for
 offline edits and retry behavior.
+
+## Phase 3 hardening gate
+
+Optimistic concurrency uses explicit `version` metadata on attendance/payroll
+records. The database migration is staged separately from client compare-and-swap
+logic so schema rollout can be validated before the application depends on it.
+
+`audit_logs` is append-only from application code through a controlled RPC;
+direct client inserts are not granted by RLS.
