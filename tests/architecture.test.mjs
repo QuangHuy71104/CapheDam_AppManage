@@ -19,16 +19,22 @@ test('major business domains are outside App.tsx', () => {
     'src/features/schedule/core.ts',
     'src/features/staff/StaffManagementScreen.tsx',
     'src/shared/api/account-client.ts',
-    'src/app/legacy-app-data.ts',
+    'src/features/payroll/workspace.ts',
   ];
   for (const path of expected) {
     assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), true, `missing ${path}`);
   }
 });
 
-test('legacy aggregate data is explicitly isolated', () => {
-  const legacy = readFileSync(new URL('../src/app/legacy-app-data.ts', import.meta.url), 'utf8');
-  assert.match(legacy, /Transitional aggregate snapshot/);
+test('legacy AppData boundary is retired', () => {
+  assert.equal(existsSync(new URL('../src/app/legacy-app-data.ts', import.meta.url)), false);
+  const workspace = readFileSync(
+    new URL('../src/features/payroll/workspace.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspace, /export type PayrollWorkspace/);
+  assert.doesNotMatch(workspace, /ingredients/);
+  assert.doesNotMatch(workspace, /closings/);
 });
 
 test('database migration baseline exists', () => {
@@ -40,41 +46,40 @@ test('database migration baseline exists', () => {
 
 
 test('inventory persistence bypasses aggregate snapshot sync', () => {
-  const syncStart = app.indexOf('const syncAppDataToSupabase');
-  const syncEnd = app.indexOf('const autoConfirmEligiblePayrolls', syncStart);
-  assert.notEqual(syncStart, -1);
-  assert.notEqual(syncEnd, -1);
-  assert.doesNotMatch(app.slice(syncStart, syncEnd), /ingredient_reports/);
+  assert.doesNotMatch(app, /const syncAppDataToSupabase/);
   assert.match(app, /persistIngredientReport\(report\)/);
-  const repository = readFileSync(new URL('../src/features/inventory/repository.ts', import.meta.url), 'utf8');
+
+  const repository = readFileSync(
+    new URL('../src/features/inventory/repository.ts', import.meta.url),
+    'utf8',
+  );
+
   assert.match(repository, /from\('ingredient_reports'\)\.upsert/);
   assert.match(repository, /listIngredientReports/);
 });
 
 
 test('closing persistence bypasses aggregate snapshot sync', () => {
-  const syncStart = app.indexOf('const syncAppDataToSupabase');
-  const syncEnd = app.indexOf('const autoConfirmEligiblePayrolls', syncStart);
-  assert.notEqual(syncStart, -1);
-  assert.notEqual(syncEnd, -1);
-
-  const aggregateSync = app.slice(syncStart, syncEnd);
-  assert.doesNotMatch(aggregateSync, /shift_close_reports/);
+  assert.doesNotMatch(app, /const syncAppDataToSupabase/);
   assert.match(app, /persistShiftCloseReport\(report\)/);
 
   const repository = readFileSync(
     new URL('../src/features/closing/repository.ts', import.meta.url),
     'utf8',
   );
+
   assert.match(repository, /from\('shift_close_reports'\)\.upsert/);
   assert.match(repository, /listShiftCloseReports/);
 });
 
 
-test('report caches are outside legacy AppData', () => {
-  const legacy = readFileSync(new URL('../src/app/legacy-app-data.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(legacy, /ingredients:/);
-  assert.doesNotMatch(legacy, /closings:/);
+test('report caches are outside payroll workspace', () => {
+  const workspace = readFileSync(
+    new URL('../src/features/payroll/workspace.ts', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(workspace, /ingredients:/);
+  assert.doesNotMatch(workspace, /closings:/);
   assert.match(app, /useState<IngredientReport\[\]>\(\[\]\)/);
   assert.match(app, /useState<ShiftCloseReport\[\]>\(\[\]\)/);
 });
@@ -100,4 +105,16 @@ test('payroll confirmation persistence is feature-owned', () => {
   assert.match(repository, /listBranchPayrollConfirmations/);
   assert.match(repository, /from\('branch_payroll_confirmations'\)/);
   assert.match(repository, /\.upsert/);
+});
+
+
+test('payroll workspace sync is outside App', () => {
+  assert.doesNotMatch(app, /const syncAppDataToSupabase/);
+  assert.match(app, /syncPayrollWorkspace\(currentData, activeProfile, remoteSnapshot\)/);
+  const sync = readFileSync(
+    new URL('../src/features/payroll/workspace-sync.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(sync, /saveAttendanceSheets/);
+  assert.match(sync, /saveBranchPayrollConfirmations/);
 });

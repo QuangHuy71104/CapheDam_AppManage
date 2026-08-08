@@ -120,19 +120,20 @@ import type {
   AttendanceSheet,
   BranchPayrollConfirmation,
 } from './src/features/attendance/model';
-import { listAttendanceSheets, saveAttendanceSheets } from './src/features/attendance/repository';
+import { listAttendanceSheets } from './src/features/attendance/repository';
 import {
   calculateBranchPayroll,
   calculatePayroll,
   getBranchPayrollConfirmation,
   invalidateBranchPayroll,
 } from './src/features/payroll/domain';
-import { listBranchPayrollConfirmations, saveBranchPayrollConfirmations } from './src/features/payroll/repository';
+import { listBranchPayrollConfirmations } from './src/features/payroll/repository';
+import { syncPayrollWorkspace } from './src/features/payroll/workspace-sync';
 import {
-  initialData,
-  normalizeAppData,
-  type AppData,
-} from './src/app/legacy-app-data';
+  initialPayrollWorkspace,
+  normalizePayrollWorkspace,
+  type PayrollWorkspace,
+} from './src/features/payroll/workspace';
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients' | 'staffManagement' | 'schedule';
 type AppPage = { key: 'main' } | { key: 'managerPayrollEmployee'; employeeId: string };
 type AuthFeedback = {
@@ -157,7 +158,7 @@ type PendingSignupDraft = {
   branchId: string | null;
 };
 
-const STORAGE_KEY = 'caphedam-appmanage-v1';
+const PAYROLL_WORKSPACE_STORAGE_KEY = 'caphedam-payroll-workspace-v2';
 const PROFILE_OVERRIDE_PREFIX = 'caphedam-profile-override-';
 const logoImage = new URL('./assets/logo.jpg', import.meta.url).href;
 
@@ -730,11 +731,11 @@ const uploadProfileAvatar = async (profileId: string, image: Blob) => {
   return result.avatarUrl;
 };
 
-const loadAppDataFromSupabase = async (profile: UserProfile): Promise<AppData> => {
+const loadAppDataFromSupabase = async (profile: UserProfile): Promise<PayrollWorkspace> => {
   const attendanceSheets = await listAttendanceSheets(profile);
   const branchPayrolls = await listBranchPayrollConfirmations(profile);
 
-  return normalizeAppData({
+  return normalizePayrollWorkspace({
     attendanceSheets,
     branchPayrolls,
   });
@@ -787,103 +788,7 @@ const getFriendlyErrorMessage = (error: unknown, fallback = 'Chưa thực hiện
   return fallback;
 };
 
-const deduplicateAttendanceSheets = (sheets: AttendanceSheet[]) => {
-  const uniqueSheets = new Map<string, AttendanceSheet>();
-
-  sheets.forEach((sheet) => {
-    const employeeName = sheet.employeeName.trim();
-    if (!employeeName || !/^\d{4}-\d{2}$/.test(sheet.monthKey)) {
-      return;
-    }
-    const key = `${sheet.branchId}|${sheet.monthKey}|${
-      sheet.userId ? `user:${sheet.userId}` : `name:${employeeName.toLocaleLowerCase('vi-VN')}`
-    }`;
-    const existing = uniqueSheets.get(key);
-    if (!existing) {
-      uniqueSheets.set(key, { ...sheet, employeeName });
-      return;
-    }
-
-    const preferred = sheet.userId && !existing.userId ? sheet : existing;
-    const secondary = preferred === sheet ? existing : sheet;
-    uniqueSheets.set(key, {
-      ...preferred,
-      days: { ...secondary.days, ...preferred.days },
-      employeeConfirmedAt: preferred.employeeConfirmedAt ?? secondary.employeeConfirmedAt,
-      managerApprovedAt: preferred.managerApprovedAt ?? secondary.managerApprovedAt,
-      managerApprovedBy: preferred.managerApprovedBy ?? secondary.managerApprovedBy,
-      userId: preferred.userId ?? secondary.userId,
-    });
-  });
-
-  return [...uniqueSheets.values()];
-};
-
-const deduplicateBranchPayrolls = (confirmations: BranchPayrollConfirmation[]) => {
-  const uniqueConfirmations = new Map<string, BranchPayrollConfirmation>();
-  confirmations.forEach((confirmation) => {
-    if (!/^\d{4}-\d{2}$/.test(confirmation.monthKey)) {
-      return;
-    }
-    const key = `${confirmation.branchId}|${confirmation.monthKey}`;
-    const existing = uniqueConfirmations.get(key);
-    if (!existing || (!existing.managerConfirmedAt && confirmation.managerConfirmedAt)) {
-      uniqueConfirmations.set(key, confirmation);
-    }
-  });
-  return [...uniqueConfirmations.values()];
-};
-
-const changedSinceSnapshot = <T extends { id: string }>(current: T[], snapshot: T[]) => {
-  const snapshotById = new Map(snapshot.map((item) => [item.id, item]));
-  return current.filter((item) => JSON.stringify(item) !== JSON.stringify(snapshotById.get(item.id)));
-};
-
-const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, snapshot: AppData = initialData) => {
-  const updatedAt = new Date().toISOString();
-  const scopedAttendance = deduplicateAttendanceSheets(current.attendanceSheets).filter((sheet) =>
-    profile.role === 'owner'
-      ? true
-      : profile.role === 'manager'
-        ? sheet.branchId === profile.branchId
-        : sheet.userId === profile.id ||
-          (sheet.branchId === profile.branchId && sheet.employeeName.trim().toLowerCase() === profile.fullName.trim().toLowerCase()),
-  );
-  const snapshotAttendance = deduplicateAttendanceSheets(snapshot.attendanceSheets).filter((sheet) =>
-    profile.role === 'owner'
-      ? true
-      : profile.role === 'manager'
-        ? sheet.branchId === profile.branchId
-        : sheet.userId === profile.id ||
-          (sheet.branchId === profile.branchId && sheet.employeeName.trim().toLowerCase() === profile.fullName.trim().toLowerCase()),
-  );
-  const scopedPayrolls = deduplicateBranchPayrolls(current.branchPayrolls).filter((confirmation) =>
-    profile.role === 'owner' ? true : profile.role === 'manager' && confirmation.branchId === profile.branchId,
-  );
-  const snapshotPayrolls = deduplicateBranchPayrolls(snapshot.branchPayrolls).filter((confirmation) =>
-    profile.role === 'owner' ? true : profile.role === 'manager' && confirmation.branchId === profile.branchId,
-  );
-  // Only send local changes. Re-upserting every row from a manager's old
-  // snapshot can otherwise clear an employee confirmation made elsewhere.
-  const changedAttendance = changedSinceSnapshot(scopedAttendance, snapshotAttendance);
-  const changedPayrolls = changedSinceSnapshot(scopedPayrolls, snapshotPayrolls);
-
-  const results = await Promise.allSettled([
-    saveAttendanceSheets(changedAttendance, profile),
-    saveBranchPayrollConfirmations(changedPayrolls),
-  ]);
-
-  const errors = results
-    .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-    .map((result) => (result.reason instanceof Error ? result.reason.message : 'Chưa lưu được dữ liệu.'));
-
-  if (errors.length > 0) {
-    throw new Error(errors.join('\n'));
-  }
-};
-
-
-const autoConfirmEligiblePayrolls = (current: AppData, now = new Date()) => {
+const autoConfirmEligiblePayrolls = (current: PayrollWorkspace, now = new Date()) => {
   const nextConfirmations = [...current.branchPayrolls];
   let changed = false;
 
@@ -937,7 +842,7 @@ const attendanceFields: AttendanceInputField[] = ['morning', 'afternoon', 'openi
 // A published schedule owns only the hours it placed in the sheet. If a
 // manager later corrects a cell by hand, a re-send of the week keeps that
 // correction instead of overwriting it.
-const applyPublishedScheduleToAttendance = (current: AppData, schedule: PublishedWorkSchedule): AppData => {
+const applyPublishedScheduleToAttendance = (current: PayrollWorkspace, schedule: PublishedWorkSchedule): PayrollWorkspace => {
   const scheduledByEmployeeId = new Map<string, ScheduledEmployeeHours>();
   const scheduledByName = new Map<string, ScheduledEmployeeHours>();
   const affectedDateKeys = new Set<string>();
@@ -1425,7 +1330,7 @@ const transferKeyboard: KeyboardTypeOptions = 'default';
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('attendance');
   const [page, setPage] = useState<AppPage>({ key: 'main' });
-  const [data, setData] = useState<AppData>(initialData);
+  const [data, setData] = useState<PayrollWorkspace>(initialPayrollWorkspace);
   const [ingredientReports, setIngredientReports] = useState<IngredientReport[]>([]);
   const [closingReports, setClosingReports] = useState<ShiftCloseReport[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -1444,9 +1349,9 @@ export default function App() {
   const contentScrollRef = useRef<ScrollView>(null);
   const exportCaptureRef = useRef<HTMLDivElement>(null);
   const remoteSnapshotRef = useRef('');
-  const latestDataRef = useRef<AppData>(initialData);
+  const latestDataRef = useRef<PayrollWorkspace>(initialPayrollWorkspace);
   const latestProfileRef = useRef<UserProfile | null>(null);
-  const remoteRefreshInFlightRef = useRef<Promise<[AppData, IngredientReport[], ShiftCloseReport[]]> | null>(null);
+  const remoteRefreshInFlightRef = useRef<Promise<[PayrollWorkspace, IngredientReport[], ShiftCloseReport[]]> | null>(null);
   const syncQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingSignupRef = useRef<PendingSignupDraft | null>(null);
 
@@ -1589,9 +1494,9 @@ export default function App() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const rawData = await webStorage.getItem(STORAGE_KEY);
+        const rawData = await webStorage.getItem(PAYROLL_WORKSPACE_STORAGE_KEY);
         if (rawData) {
-          setData(normalizeAppData(JSON.parse(rawData) as Partial<AppData>));
+          setData(normalizePayrollWorkspace(JSON.parse(rawData) as Partial<PayrollWorkspace>));
         }
       } catch {
         Alert.alert('Không đọc được dữ liệu', 'App sẽ tiếp tục với dữ liệu trống trên máy này.');
@@ -1651,10 +1556,10 @@ export default function App() {
       if (!user) {
         setProfile(null);
         setRemoteReady(false);
-        setData(initialData);
+        setData(initialPayrollWorkspace);
         setIngredientReports([]);
         setClosingReports([]);
-        remoteSnapshotRef.current = JSON.stringify(initialData);
+        remoteSnapshotRef.current = JSON.stringify(initialPayrollWorkspace);
         return;
       }
 
@@ -1714,7 +1619,7 @@ export default function App() {
       return;
     }
 
-    webStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch(() => {
+    webStorage.setItem(PAYROLL_WORKSPACE_STORAGE_KEY, JSON.stringify(data)).catch(() => {
       Alert.alert('Không lưu được dữ liệu', 'Vui lòng kiểm tra dung lượng thiết bị.');
     });
   }, [data, loaded]);
@@ -1772,13 +1677,13 @@ export default function App() {
               return;
             }
 
-            let remoteSnapshot = initialData;
+            let remoteSnapshot = initialPayrollWorkspace;
             try {
-              remoteSnapshot = normalizeAppData(JSON.parse(remoteSnapshotRef.current) as Partial<AppData>);
+              remoteSnapshot = normalizePayrollWorkspace(JSON.parse(remoteSnapshotRef.current) as Partial<PayrollWorkspace>);
             } catch {
               // A first local change can happen before a snapshot is available.
             }
-            await syncAppDataToSupabase(currentData, activeProfile, remoteSnapshot);
+            await syncPayrollWorkspace(currentData, activeProfile, remoteSnapshot);
 
             if (!cancelled && JSON.stringify(latestDataRef.current) === currentSnapshot) {
               remoteSnapshotRef.current = currentSnapshot;
