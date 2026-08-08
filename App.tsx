@@ -130,7 +130,6 @@ import {
   initialData,
   normalizeAppData,
   type AppData,
-  type AttendanceEvent,
 } from './src/app/legacy-app-data';
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients' | 'staffManagement' | 'schedule';
 type AppPage = { key: 'main' } | { key: 'managerPayrollEmployee'; employeeId: string };
@@ -757,8 +756,6 @@ const loadAppDataFromSupabase = async (profile: UserProfile): Promise<AppData> =
     profile.role === 'employee'
       ? { data: [], error: null }
       : await applyBranchScope('branch_payroll_confirmations', profile).order('month_key', { ascending: false });
-  const ingredients = await listIngredientReports(profile);
-  const closings = await listShiftCloseReports(profile);
 
   const remoteError = attendanceResult.error ?? payrollResult.error;
 
@@ -797,11 +794,8 @@ const loadAppDataFromSupabase = async (profile: UserProfile): Promise<AppData> =
   });
 
   return normalizeAppData({
-    attendance: [],
     attendanceSheets,
     branchPayrolls,
-    ingredients,
-    closings,
   });
 };
 
@@ -1552,6 +1546,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('attendance');
   const [page, setPage] = useState<AppPage>({ key: 'main' });
   const [data, setData] = useState<AppData>(initialData);
+  const [ingredientReports, setIngredientReports] = useState<IngredientReport[]>([]);
+  const [closingReports, setClosingReports] = useState<ShiftCloseReport[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [authLoaded, setAuthLoaded] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
@@ -1570,7 +1566,7 @@ export default function App() {
   const remoteSnapshotRef = useRef('');
   const latestDataRef = useRef<AppData>(initialData);
   const latestProfileRef = useRef<UserProfile | null>(null);
-  const remoteRefreshInFlightRef = useRef<Promise<AppData> | null>(null);
+  const remoteRefreshInFlightRef = useRef<Promise<[AppData, IngredientReport[], ShiftCloseReport[]]> | null>(null);
   const syncQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingSignupRef = useRef<PendingSignupDraft | null>(null);
 
@@ -1653,11 +1649,15 @@ export default function App() {
       return;
     }
 
-    const request = loadAppDataFromSupabase(profile);
+    const request = Promise.all([
+      loadAppDataFromSupabase(profile),
+      listIngredientReports(profile),
+      listShiftCloseReports(profile),
+    ]);
     remoteRefreshInFlightRef.current = request;
 
     try {
-      const remoteData = await request;
+      const [remoteData, remoteIngredients, remoteClosings] = await request;
 
       const activeProfile = latestProfileRef.current;
       if (
@@ -1677,6 +1677,8 @@ export default function App() {
       remoteSnapshotRef.current = JSON.stringify(remoteData);
       latestDataRef.current = remoteData;
       setData(remoteData);
+      setIngredientReports(remoteIngredients);
+      setClosingReports(remoteClosings);
       setSyncError(null);
     } catch {
       // This is a background refresh. Saving data has its own retry/error UI,
@@ -1770,6 +1772,8 @@ export default function App() {
         setProfile(null);
         setRemoteReady(false);
         setData(initialData);
+        setIngredientReports([]);
+        setClosingReports([]);
         remoteSnapshotRef.current = JSON.stringify(initialData);
         return;
       }
@@ -1777,7 +1781,11 @@ export default function App() {
       try {
         setRemoteReady(false);
         const nextProfile = await fetchUserProfile(user, pendingSignupRef.current);
-        const remoteData = await loadAppDataFromSupabase(nextProfile);
+        const [remoteData, remoteIngredients, remoteClosings] = await Promise.all([
+          loadAppDataFromSupabase(nextProfile),
+          listIngredientReports(nextProfile),
+          listShiftCloseReports(nextProfile),
+        ]);
 
         if (cancelled) {
           return;
@@ -1793,6 +1801,8 @@ export default function App() {
 
         remoteSnapshotRef.current = JSON.stringify(remoteData);
         setData(remoteData);
+        setIngredientReports(remoteIngredients);
+        setClosingReports(remoteClosings);
         setRemoteReady(true);
         pendingSignupRef.current = null;
       } catch (error) {
@@ -2062,10 +2072,10 @@ export default function App() {
     selectedBranchId,
     selectedMonthKey,
   );
-  const selectedBranchIngredients = data.ingredients.filter(
+  const selectedBranchIngredients = ingredientReports.filter(
     (report) => getReportBranchId(report) === selectedBranchId,
   );
-  const selectedBranchClosings = data.closings.filter((report) => getReportBranchId(report) === selectedBranchId);
+  const selectedBranchClosings = closingReports.filter((report) => getReportBranchId(report) === selectedBranchId);
   const selectedBranchIngredientsThisMonth = selectedBranchIngredients.filter((report) =>
     isReportInMonth(report.timestamp, selectedMonthKey),
   );
@@ -2460,10 +2470,7 @@ export default function App() {
       return;
     }
 
-    setData((current) => ({
-      ...current,
-      ingredients: [report, ...current.ingredients].slice(0, 80),
-    }));
+    setIngredientReports((current) => [report, ...current.filter((item) => item.id !== report.id)].slice(0, 80));
     setSupplyRows(createSupplyState());
     setIngredientNote('');
     await shareText(buildSupplyShareText(activeBranch, report));
@@ -2551,10 +2558,7 @@ export default function App() {
       return;
     }
 
-    setData((current) => ({
-      ...current,
-      closings: [report, ...current.closings.filter((item) => item.id !== report.id)].slice(0, 40),
-    }));
+    setClosingReports((current) => [report, ...current.filter((item) => item.id !== report.id)].slice(0, 40));
     setPlasticCupRows(createPlasticCupState());
     setCornMilkRow(createBalanceInputState());
     setSmallBottles('');
@@ -2843,7 +2847,7 @@ export default function App() {
                 monthKey={selectedMonthKey}
                 onBranchChange={setSelectedBranchId}
                 onMonthChange={setSelectedMonthKey}
-                records={data.ingredients}
+                records={ingredientReports}
               />
             )}
 

@@ -52,3 +52,9 @@ Closing (`shift_close_reports`) is also removed from aggregate snapshot
 persistence. Reads and writes are owned by
 `src/features/closing/repository.ts`. `AppData.closings` remains temporarily
 as a UI cache and must not be reintroduced into `syncAppDataToSupabase`.
+
+## Phase 2 report cache split
+
+Report UI caches are now independent from the offline payroll workspace.
+Inventory and Closing are never serialized inside legacy AppData/localStorage.
+Their source of truth is Supabase through their feature repositories.
