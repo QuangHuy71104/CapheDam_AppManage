@@ -103,6 +103,7 @@ import {
   restorePlasticCupInput,
   restoreStockBalanceInput,
 } from './src/features/closing/balance';
+import { listShiftCloseReports, saveShiftCloseReport as persistShiftCloseReport } from './src/features/closing/repository';
 import type {
   BalanceInputSnapshot,
   BalanceReportBase,
@@ -111,6 +112,7 @@ import type {
   PlasticCupKey,
   PlasticCupReport,
   StockBalanceReport,
+  ShiftCloseReport,
 } from './src/features/closing/model';
 import type {
   AttendanceDayEntry,
@@ -129,7 +131,6 @@ import {
   normalizeAppData,
   type AppData,
   type AttendanceEvent,
-  type ShiftCloseReport,
 } from './src/app/legacy-app-data';
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients' | 'staffManagement' | 'schedule';
 type AppPage = { key: 'main' } | { key: 'managerPayrollEmployee'; employeeId: string };
@@ -740,7 +741,7 @@ const applyAttendanceScope = (profile: UserProfile) => {
   return request.order('month_key', { ascending: false });
 };
 
-const applyBranchScope = (tableName: 'shift_close_reports' | 'branch_payroll_confirmations', profile: UserProfile) => {
+const applyBranchScope = (tableName: 'branch_payroll_confirmations', profile: UserProfile) => {
   let request = supabase.from(tableName).select('*');
 
   if (profile.role !== 'owner' && profile.branchId) {
@@ -757,9 +758,9 @@ const loadAppDataFromSupabase = async (profile: UserProfile): Promise<AppData> =
       ? { data: [], error: null }
       : await applyBranchScope('branch_payroll_confirmations', profile).order('month_key', { ascending: false });
   const ingredients = await listIngredientReports(profile);
-  const closingsResult = await applyBranchScope('shift_close_reports', profile).order('reported_at', { ascending: false });
+  const closings = await listShiftCloseReports(profile);
 
-  const remoteError = attendanceResult.error ?? payrollResult.error ?? closingsResult.error;
+  const remoteError = attendanceResult.error ?? payrollResult.error;
 
   if (remoteError) {
     throw remoteError;
@@ -795,24 +796,6 @@ const loadAppDataFromSupabase = async (profile: UserProfile): Promise<AppData> =
     };
   });
 
-  const closings: ShiftCloseReport[] = (closingsResult.data ?? []).map((item) => {
-    const row = item as Record<string, unknown>;
-    const payload =
-      row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
-        ? (row.payload as Partial<ShiftCloseReport>)
-        : {};
-
-    return {
-      machineMoney: '',
-      storeMoney: '',
-      note: '',
-      timestamp: String(row.reported_at),
-      ...payload,
-      id: String(row.id),
-      branchId: String(row.branch_id),
-    };
-  });
-
   return normalizeAppData({
     attendance: [],
     attendanceSheets,
@@ -825,7 +808,6 @@ const loadAppDataFromSupabase = async (profile: UserProfile): Promise<AppData> =
 const syncTableLabels: Record<string, string> = {
   attendance_sheets: 'bảng chấm công',
   branch_payroll_confirmations: 'xác nhận bảng lương',
-  shift_close_reports: 'báo ca',
 };
 
 const getFriendlyErrorMessage = (error: unknown, fallback = 'Chưa thực hiện được. Vui lòng thử lại.') => {
@@ -985,18 +967,10 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, sna
   const snapshotPayrolls = deduplicateBranchPayrolls(snapshot.branchPayrolls).filter((confirmation) =>
     profile.role === 'owner' ? true : profile.role === 'manager' && confirmation.branchId === profile.branchId,
   );
-  const scopedClosings = current.closings.filter((report) =>
-    profile.role === 'owner' ? true : getReportBranchId(report) === profile.branchId,
-  );
-  const snapshotClosings = snapshot.closings.filter((report) =>
-    profile.role === 'owner' ? true : getReportBranchId(report) === profile.branchId,
-  );
-
   // Only send local changes. Re-upserting every row from a manager's old
   // snapshot can otherwise clear an employee confirmation made elsewhere.
   const changedAttendance = changedSinceSnapshot(scopedAttendance, snapshotAttendance);
   const changedPayrolls = changedSinceSnapshot(scopedPayrolls, snapshotPayrolls);
-  const changedClosings = changedSinceSnapshot(scopedClosings, snapshotClosings);
 
   const attendanceRows = changedAttendance.map((sheet) => ({
     id: sheet.id,
@@ -1020,18 +994,9 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, sna
     auto_confirmed: Boolean(confirmation.autoConfirmed),
     updated_at: updatedAt,
   }));
-  const closingRows = changedClosings.map((report) => ({
-    id: report.id,
-    branch_id: getReportBranchId(report),
-    reported_at: report.timestamp,
-    payload: report,
-    updated_at: updatedAt,
-  }));
-
   const results = await Promise.allSettled([
     upsertSupabaseRows('attendance_sheets', attendanceRows),
     upsertSupabaseRows('branch_payroll_confirmations', payrollRows),
-    upsertSupabaseRows('shift_close_reports', closingRows),
   ]);
 
   const errors = results
@@ -1988,6 +1953,7 @@ export default function App() {
           : undefined;
     const payrollFilter = profile.role === 'manager' && profile.branchId ? `branch_id=eq.${profile.branchId}` : undefined;
     const ingredientFilter = profile.role !== 'owner' && profile.branchId ? `branch_id=eq.${profile.branchId}` : undefined;
+    const closingFilter = profile.role !== 'owner' && profile.branchId ? `branch_id=eq.${profile.branchId}` : undefined;
     let channel = supabase.channel(`app-data-refresh-${profile.id}`);
 
     channel = channel.on(
@@ -2020,6 +1986,16 @@ export default function App() {
         schema: 'public',
         table: 'ingredient_reports',
         ...(ingredientFilter ? { filter: ingredientFilter } : {}),
+      },
+      requestRefresh,
+    );
+    channel = channel.on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'shift_close_reports',
+        ...(closingFilter ? { filter: closingFilter } : {}),
       },
       requestRefresh,
     );
@@ -2493,7 +2469,7 @@ export default function App() {
     await shareText(buildSupplyShareText(activeBranch, report));
   };
 
-  const saveShiftClose = () => {
+  const saveShiftClose = async () => {
     setClosingErrors([]);
 
     const bankTransferExpression = trimTransferExpression(bankTransferMoney);
@@ -2567,9 +2543,17 @@ export default function App() {
       cashierName: signedEmployeeName || undefined,
     };
 
+    try {
+      await persistShiftCloseReport(report);
+    } catch (error) {
+      const message = getFriendlyErrorMessage(error, 'Chưa lưu được báo ca. Vui lòng thử lại.');
+      Alert.alert('Chưa lưu được báo ca', message);
+      return;
+    }
+
     setData((current) => ({
       ...current,
-      closings: [report, ...current.closings].slice(0, 40),
+      closings: [report, ...current.closings.filter((item) => item.id !== report.id)].slice(0, 40),
     }));
     setPlasticCupRows(createPlasticCupState());
     setCornMilkRow(createBalanceInputState());
