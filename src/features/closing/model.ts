@@ -32,3 +32,33 @@ export type PlasticCupReport = BalanceReportBase & {
 export type StockBalanceReport = BalanceReportBase & {
   machineCount?: number;
 };
+
+export type ShiftCloseReport = {
+  id: string;
+  branchId?: string;
+  plasticCups?: string;
+  plasticCupRows?: PlasticCupReport[];
+  cornMilk?: string;
+  cornMilkReport?: StockBalanceReport;
+  glassCups?: string;
+  smallBottles?: string;
+  largeBottles?: string;
+  coffeePacks?: string;
+  smallCoffeePacks?: string;
+  largeCoffeePacks?: string;
+  machineMoney: string;
+  storeMoney: string;
+  transferMoney?: string;
+  shopeeMoney?: string;
+  bankTransferMoney?: string;
+  bankTransferTotal?: number;
+  iceBags?: string;
+  waterBottles?: string;
+  cardTopupMoney?: string;
+  note: string;
+  timestamp: string;
+  cashierName?: string;
+  shiftName?: string;
+  revenue?: number;
+  discrepancy?: number;
+};

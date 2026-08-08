@@ -50,3 +50,22 @@ test('inventory persistence bypasses aggregate snapshot sync', () => {
   assert.match(repository, /from\('ingredient_reports'\)\.upsert/);
   assert.match(repository, /listIngredientReports/);
 });
+
+
+test('closing persistence bypasses aggregate snapshot sync', () => {
+  const syncStart = app.indexOf('const syncAppDataToSupabase');
+  const syncEnd = app.indexOf('const autoConfirmEligiblePayrolls', syncStart);
+  assert.notEqual(syncStart, -1);
+  assert.notEqual(syncEnd, -1);
+
+  const aggregateSync = app.slice(syncStart, syncEnd);
+  assert.doesNotMatch(aggregateSync, /shift_close_reports/);
+  assert.match(app, /persistShiftCloseReport\(report\)/);
+
+  const repository = readFileSync(
+    new URL('../src/features/closing/repository.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(repository, /from\('shift_close_reports'\)\.upsert/);
+  assert.match(repository, /listShiftCloseReports/);
+});
