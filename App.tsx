@@ -94,6 +94,22 @@ import type {
   SupplyItemStatus,
   SupplyReportItem,
 } from './src/features/inventory/model';
+import {
+  createEmptyBalanceReport,
+  createStockBalanceReport,
+  deriveCupBalance,
+  restorePlasticCupInput,
+  restoreStockBalanceInput,
+} from './src/features/closing/balance';
+import type {
+  BalanceInputSnapshot,
+  BalanceReportBase,
+  CupBalanceStatus,
+  PlasticCupInput,
+  PlasticCupKey,
+  PlasticCupReport,
+  StockBalanceReport,
+} from './src/features/closing/model';
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients' | 'staffManagement' | 'schedule';
 type AppPage = { key: 'main' } | { key: 'managerPayrollEmployee'; employeeId: string };
 type AuthFeedback = {
@@ -106,42 +122,6 @@ type BeforeInstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 };
 type AttendanceType = 'clockIn' | 'clockOut';
-type CupBalanceStatus = 'enough' | 'short' | 'over';
-type PlasticCupKey = 'small' | 'large' | 'icedTea';
-
-
-type PlasticCupInput = {
-  opening: string;
-  remaining: string;
-  machineCups: string;
-  status: CupBalanceStatus;
-  variance: string;
-};
-
-type BalanceInputSnapshot = {
-  openingText?: string;
-  remainingText?: string;
-  machineCupsText?: string;
-};
-
-type BalanceReportBase = BalanceInputSnapshot & {
-  label: string;
-  opening: number;
-  remaining: number;
-  sold: number;
-  status: CupBalanceStatus;
-  variance: number;
-};
-
-type PlasticCupReport = BalanceReportBase & {
-  key: PlasticCupKey;
-  machineCups?: number;
-};
-
-type StockBalanceReport = BalanceReportBase & {
-  machineCount?: number;
-};
-
 type AttendanceEvent = {
   id: string;
   employeeName: string;
@@ -334,100 +314,6 @@ const getTabItemsForRole = (role: UserRole) =>
 
 
 const createId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-
-const deriveCupBalance = (row: PlasticCupInput): Pick<PlasticCupInput, 'status' | 'variance'> => {
-  if (!isNumericText(row.opening) || !isNumericText(row.remaining) || !isNumericText(row.machineCups)) {
-    return { status: 'enough', variance: '' };
-  }
-
-  const sold = toNumber(row.opening) - toNumber(row.remaining);
-  const difference = toNumber(row.machineCups) - sold;
-
-  if (difference > 0) {
-    return { status: 'over', variance: String(difference) };
-  }
-
-  if (difference < 0) {
-    return { status: 'short', variance: String(Math.abs(difference)) };
-  }
-
-  return { status: 'enough', variance: '' };
-};
-
-const createStockBalanceReport = (label: string, row: PlasticCupInput): StockBalanceReport => {
-  const opening = toNumber(row.opening);
-  const remaining = toNumber(row.remaining);
-  const machineCount = toNumber(row.machineCups);
-  const sold = opening - remaining;
-  const balance = deriveCupBalance(row);
-
-  return {
-    label,
-    opening,
-    remaining,
-    machineCount,
-    sold,
-    status: balance.status,
-    variance: balance.status === 'enough' ? 0 : toNumber(balance.variance),
-    openingText: row.opening.trim(),
-    remainingText: row.remaining.trim(),
-    machineCupsText: row.machineCups.trim(),
-  };
-};
-
-const createEmptyBalanceReport = (label: string): BalanceReportBase => ({
-  label,
-  opening: 0,
-  remaining: 0,
-  sold: 0,
-  status: 'enough',
-  variance: 0,
-  openingText: '',
-  remainingText: '',
-  machineCupsText: '',
-});
-
-const savedNumberToInput = (textValue: string | undefined, numericValue?: number) => {
-  if (textValue !== undefined) {
-    return textValue;
-  }
-
-  if (typeof numericValue === 'number' && Number.isFinite(numericValue)) {
-    return String(numericValue);
-  }
-
-  return '';
-};
-
-const restorePlasticCupInput = (row?: PlasticCupReport): PlasticCupInput => {
-  const restored = {
-    opening: savedNumberToInput(row?.openingText, row?.opening),
-    remaining: savedNumberToInput(row?.remainingText, row?.remaining),
-    machineCups: savedNumberToInput(row?.machineCupsText, row?.machineCups),
-    status: 'enough' as CupBalanceStatus,
-    variance: '',
-  };
-
-  return {
-    ...restored,
-    ...deriveCupBalance(restored),
-  };
-};
-
-const restoreStockBalanceInput = (row?: StockBalanceReport): PlasticCupInput => {
-  const restored = {
-    opening: savedNumberToInput(row?.openingText, row?.opening),
-    remaining: savedNumberToInput(row?.remainingText, row?.remaining),
-    machineCups: savedNumberToInput(row?.machineCupsText, row?.machineCount),
-    status: 'enough' as CupBalanceStatus,
-    variance: '',
-  };
-
-  return {
-    ...restored,
-    ...deriveCupBalance(restored),
-  };
-};
 
 const formatDateTime = (value: string) =>
   new Intl.DateTimeFormat('vi-VN', {
