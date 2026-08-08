@@ -69,3 +69,12 @@ test('closing persistence bypasses aggregate snapshot sync', () => {
   assert.match(repository, /from\('shift_close_reports'\)\.upsert/);
   assert.match(repository, /listShiftCloseReports/);
 });
+
+
+test('report caches are outside legacy AppData', () => {
+  const legacy = readFileSync(new URL('../src/app/legacy-app-data.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(legacy, /ingredients:/);
+  assert.doesNotMatch(legacy, /closings:/);
+  assert.match(app, /useState<IngredientReport\[\]>\(\[\]\)/);
+  assert.match(app, /useState<ShiftCloseReport\[\]>\(\[\]\)/);
+});
