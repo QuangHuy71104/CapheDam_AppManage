@@ -19,9 +19,8 @@ Pure domain modules must not import React, browser UI primitives, or Supabase.
 
 ## Server state
 
-Supabase is the long-term source of truth. `src/app/legacy-app-data.ts` retains
-the current aggregate snapshot only as a migration boundary. New features must
-not add fields to it.
+Supabase is the long-term source of truth. `src/features/payroll/workspace.ts` contains the intentionally narrow offline
+attendance/payroll workspace. Report data is loaded directly from Supabase.
 
 The next data-layer phase should migrate, in order:
 
@@ -65,3 +64,10 @@ Payroll workspace synchronization is feature-owned under
 `src/features/payroll/workspace-sync.ts`. App.tsx no longer contains table
 upsert/deduplication logic. The remaining snapshot is an offline payroll
 workspace only, not a copy of report tables.
+
+## Phase 2 complete
+
+The generic legacy AppData boundary has been retired. Inventory, Closing,
+Attendance and Payroll persistence are owned by feature repositories. The only
+local snapshot that remains is the attendance/payroll workspace used for
+offline edits and retry behavior.

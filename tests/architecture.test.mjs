@@ -19,16 +19,22 @@ test('major business domains are outside App.tsx', () => {
     'src/features/schedule/core.ts',
     'src/features/staff/StaffManagementScreen.tsx',
     'src/shared/api/account-client.ts',
-    'src/app/legacy-app-data.ts',
+    'src/features/payroll/workspace.ts',
   ];
   for (const path of expected) {
     assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), true, `missing ${path}`);
   }
 });
 
-test('legacy aggregate data is explicitly isolated', () => {
-  const legacy = readFileSync(new URL('../src/app/legacy-app-data.ts', import.meta.url), 'utf8');
-  assert.match(legacy, /Transitional aggregate snapshot/);
+test('legacy AppData boundary is retired', () => {
+  assert.equal(existsSync(new URL('../src/app/legacy-app-data.ts', import.meta.url)), false);
+  const workspace = readFileSync(
+    new URL('../src/features/payroll/workspace.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspace, /export type PayrollWorkspace/);
+  assert.doesNotMatch(workspace, /ingredients/);
+  assert.doesNotMatch(workspace, /closings/);
 });
 
 test('database migration baseline exists', () => {
@@ -67,10 +73,13 @@ test('closing persistence bypasses aggregate snapshot sync', () => {
 });
 
 
-test('report caches are outside legacy AppData', () => {
-  const legacy = readFileSync(new URL('../src/app/legacy-app-data.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(legacy, /ingredients:/);
-  assert.doesNotMatch(legacy, /closings:/);
+test('report caches are outside payroll workspace', () => {
+  const workspace = readFileSync(
+    new URL('../src/features/payroll/workspace.ts', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(workspace, /ingredients:/);
+  assert.doesNotMatch(workspace, /closings:/);
   assert.match(app, /useState<IngredientReport\[\]>\(\[\]\)/);
   assert.match(app, /useState<ShiftCloseReport\[\]>\(\[\]\)/);
 });
