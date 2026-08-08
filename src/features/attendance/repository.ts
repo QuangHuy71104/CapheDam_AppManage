@@ -55,6 +55,8 @@ const mapAttendanceSheet = (item: unknown): AttendanceSheet => {
       typeof row.manager_approved_at === 'string' ? row.manager_approved_at : undefined,
     managerApprovedBy:
       typeof row.manager_approved_by === 'string' ? row.manager_approved_by : undefined,
+    version: typeof row.version === 'number' ? row.version : undefined,
+    updatedAt: typeof row.updated_at === 'string' ? row.updated_at : undefined,
   };
 };
 

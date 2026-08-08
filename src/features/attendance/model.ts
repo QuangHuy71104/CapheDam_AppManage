@@ -17,6 +17,8 @@ export type AttendanceSheet = {
   employeeConfirmedAt?: string;
   managerApprovedAt?: string;
   managerApprovedBy?: string;
+  version?: number;
+  updatedAt?: string;
 };
 
 export type BranchPayrollConfirmation = {
@@ -27,4 +29,6 @@ export type BranchPayrollConfirmation = {
   managerCancelledAt?: string;
   managerName?: string;
   autoConfirmed?: boolean;
+  version?: number;
+  updatedAt?: string;
 };
