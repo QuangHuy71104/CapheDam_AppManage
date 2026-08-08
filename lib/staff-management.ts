@@ -1,23 +1,9 @@
-import { supabase } from './supabase';
+import { callAccountApi, callAuthenticatedApi } from '../src/shared/api/account-client';
+import type { EmploymentType, UserProfile, UserRole } from '../src/shared/domain';
 
-export type StaffRole = 'owner' | 'manager' | 'employee';
-export type EmploymentType = 'full_time' | 'part_time';
-
-export type ManagedStaffProfile = {
-  id: string;
-  email: string;
-  fullName: string;
-  role: StaffRole;
-  branchId: string | null;
-  phone: string;
-  avatarUrl: string;
-  employmentType: EmploymentType;
-  startDate: string;
-  dateOfBirth: string;
-  hourlyRate: number;
-  allowance: number;
-  breakfastAllowance: number;
-};
+export type { EmploymentType } from '../src/shared/domain';
+export type StaffRole = UserRole;
+export type ManagedStaffProfile = UserProfile;
 
 export type StaffBranchAlias = {
   managerId: string;
@@ -40,57 +26,6 @@ export type DemoSeedResult = {
   password: string;
   seededAttendance: number;
   skippedAttendance: number;
-};
-
-const getAccessToken = async () => {
-  const { data } = await supabase.auth.getSession();
-  let accessToken = data.session?.access_token;
-
-  if (!accessToken) {
-    const refreshed = await supabase.auth.refreshSession();
-    accessToken = refreshed.data.session?.access_token;
-  }
-
-  if (!accessToken) {
-    throw new Error('Phiên đăng nhập đã hết. Vui lòng đăng nhập lại.');
-  }
-
-  return accessToken;
-};
-
-const callAccountApi = async <T,>(method: 'GET' | 'PATCH', body?: Record<string, unknown>): Promise<T> => {
-  const sendRequest = async (accessToken: string) =>
-    fetch('/api/account', {
-      body: body ? JSON.stringify(body) : undefined,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-      },
-      method,
-    });
-
-  let response: Response;
-  try {
-    let accessToken = await getAccessToken();
-    response = await sendRequest(accessToken);
-
-    if (response.status === 401) {
-      const refreshed = await supabase.auth.refreshSession();
-      accessToken = refreshed.data.session?.access_token ?? '';
-      if (accessToken) {
-        response = await sendRequest(accessToken);
-      }
-    }
-  } catch {
-    throw new Error('Không kết nối được. Vui lòng kiểm tra mạng rồi thử lại.');
-  }
-
-  const result = (await response!.json().catch(() => ({}))) as T & { message?: string };
-  if (!response!.ok) {
-    throw new Error(result.message || 'Chưa thực hiện được. Vui lòng thử lại.');
-  }
-
-  return result;
 };
 
 export const loadStaffManagement = () => callAccountApi<StaffManagementData>('GET');
@@ -129,36 +64,14 @@ export const saveStaffBranchAlias = async ({
   return result.alias;
 };
 
-export const seedDemoData = async (): Promise<DemoSeedResult> => {
-  const sendRequest = async (accessToken: string) =>
-    fetch('/api/demo-seed', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      method: 'POST',
-    });
 
-  let response: Response;
-  try {
-    let accessToken = await getAccessToken();
-    response = await sendRequest(accessToken);
-
-    if (response.status === 401) {
-      const refreshed = await supabase.auth.refreshSession();
-      accessToken = refreshed.data.session?.access_token ?? '';
-      if (accessToken) {
-        response = await sendRequest(accessToken);
-      }
-    }
-  } catch {
-    throw new Error('Không kết nối được. Vui lòng kiểm tra mạng rồi thử lại.');
-  }
-
-  const result = (await response!.json().catch(() => ({}))) as DemoSeedResult & { message?: string };
-  if (!response!.ok) {
-    throw new Error(result.message || 'Chưa tạo được dữ liệu thử nghiệm. Vui lòng thử lại.');
-  }
-
-  return result;
-};
+export const seedDemoData = () =>
+  callAuthenticatedApi<DemoSeedResult>(
+    '/api/demo-seed',
+    'POST',
+    undefined,
+    'Chưa tạo được dữ liệu thử nghiệm. Vui lòng thử lại.',
+  );
 
 export const getStaffDisplayName = (
   profile: Pick<ManagedStaffProfile, 'email' | 'fullName' | 'id'>,
