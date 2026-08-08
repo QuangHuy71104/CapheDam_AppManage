@@ -110,6 +110,18 @@ import type {
   PlasticCupReport,
   StockBalanceReport,
 } from './src/features/closing/model';
+import type {
+  AttendanceDayEntry,
+  AttendanceInputField,
+  AttendanceSheet,
+  BranchPayrollConfirmation,
+} from './src/features/attendance/model';
+import {
+  calculateBranchPayroll,
+  calculatePayroll,
+  getBranchPayrollConfirmation,
+  invalidateBranchPayroll,
+} from './src/features/payroll/domain';
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients' | 'staffManagement' | 'schedule';
 type AppPage = { key: 'main' } | { key: 'managerPayrollEmployee'; employeeId: string };
 type AuthFeedback = {
@@ -128,37 +140,6 @@ type AttendanceEvent = {
   note: string;
   timestamp: string;
   type: AttendanceType;
-};
-
-type AttendanceInputField = 'morning' | 'afternoon' | 'opening';
-
-type AttendanceDayEntry = {
-  morning: string;
-  afternoon: string;
-  opening: string;
-  scheduled?: Partial<Record<AttendanceInputField, string>>;
-};
-
-type AttendanceSheet = {
-  id: string;
-  userId?: string;
-  branchId: string;
-  employeeName: string;
-  monthKey: string;
-  days: Record<string, AttendanceDayEntry>;
-  employeeConfirmedAt?: string;
-  managerApprovedAt?: string;
-  managerApprovedBy?: string;
-};
-
-type BranchPayrollConfirmation = {
-  id: string;
-  branchId: string;
-  monthKey: string;
-  managerConfirmedAt?: string;
-  managerCancelledAt?: string;
-  managerName?: string;
-  autoConfirmed?: boolean;
 };
 
 type IngredientReport = {
@@ -504,73 +485,6 @@ const updateSheetCollection = (
 
   return sheets.map((sheet, sheetIndex) => (sheetIndex === index ? nextSheet : sheet));
 };
-
-const calculatePayroll = (sheet?: AttendanceSheet) => {
-  const days = Object.values(sheet?.days ?? {});
-  const openingHours = days.reduce((total, day) => total + toNumber(day.opening), 0);
-  const morningHours = days.reduce((total, day) => total + toNumber(day.morning), 0) + openingHours;
-  const afternoonHours = days.reduce((total, day) => total + toNumber(day.afternoon), 0);
-  const morningShifts = days.filter((day) => toNumber(day.morning) + toNumber(day.opening) > 0).length;
-  const afternoonShifts = days.filter((day) => toNumber(day.afternoon) > 0).length;
-  const openingShifts = days.filter((day) => toNumber(day.opening) > 0).length;
-  const totalHours = morningHours + afternoonHours;
-  const breakfastMoney = morningShifts * payrollPolicy.breakfastPerMorningShift;
-  const allowanceMoney = totalHours > 0 ? payrollPolicy.monthlyAllowance : 0;
-  const wageMoney = Math.round(totalHours * payrollPolicy.hourlyRate);
-  const totalMoney = wageMoney + breakfastMoney + allowanceMoney;
-
-  return {
-    allowanceMoney,
-    afternoonHours,
-    afternoonShifts,
-    breakfastMoney,
-    morningHours,
-    morningShifts,
-    openingHours,
-    openingShifts,
-    totalHours,
-    totalMoney,
-    wageMoney,
-  };
-};
-
-const calculateBranchPayroll = (sheets: AttendanceSheet[]) =>
-  sheets.reduce(
-    (total, sheet) => {
-      const payroll = calculatePayroll(sheet);
-
-      return {
-        employees: total.employees + 1,
-        totalHours: total.totalHours + payroll.totalHours,
-        totalMoney: total.totalMoney + payroll.totalMoney,
-        morningShifts: total.morningShifts + payroll.morningShifts,
-        afternoonShifts: total.afternoonShifts + payroll.afternoonShifts,
-      };
-    },
-    { employees: 0, totalHours: 0, totalMoney: 0, morningShifts: 0, afternoonShifts: 0 },
-  );
-
-const getBranchPayrollConfirmation = (
-  confirmations: BranchPayrollConfirmation[],
-  branchId: string,
-  monthKey: string,
-) => confirmations.find((confirmation) => confirmation.branchId === branchId && confirmation.monthKey === monthKey);
-
-const invalidateBranchPayroll = (
-  confirmations: BranchPayrollConfirmation[],
-  branchId: string,
-  monthKey: string,
-) =>
-  confirmations.map((confirmation) =>
-    confirmation.branchId === branchId && confirmation.monthKey === monthKey && confirmation.managerConfirmedAt
-      ? {
-          ...confirmation,
-          managerConfirmedAt: undefined,
-          managerCancelledAt: new Date().toISOString(),
-          autoConfirmed: false,
-        }
-      : confirmation,
-  );
 
 const normalizeAppData = (value: Partial<AppData> | null | undefined): AppData => ({
   attendance: Array.isArray(value?.attendance) ? value.attendance : [],
