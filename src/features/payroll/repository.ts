@@ -14,6 +14,8 @@ const mapBranchPayrollConfirmation = (item: unknown): BranchPayrollConfirmation 
       typeof row.manager_cancelled_at === 'string' ? row.manager_cancelled_at : undefined,
     managerName: typeof row.manager_name === 'string' ? row.manager_name : undefined,
     autoConfirmed: Boolean(row.auto_confirmed),
+    version: typeof row.version === 'number' ? row.version : undefined,
+    updatedAt: typeof row.updated_at === 'string' ? row.updated_at : undefined,
   };
 };
 

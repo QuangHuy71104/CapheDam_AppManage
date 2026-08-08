@@ -118,3 +118,24 @@ test('payroll workspace sync is outside App', () => {
   assert.match(sync, /saveAttendanceSheets/);
   assert.match(sync, /saveBranchPayrollConfirmations/);
 });
+
+
+test('concurrency metadata is represented in payroll models', () => {
+  const model = readFileSync(
+    new URL('../src/features/attendance/model.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(model, /version\?: number/);
+  assert.match(model, /updatedAt\?: string/);
+
+  const attendanceRepository = readFileSync(
+    new URL('../src/features/attendance/repository.ts', import.meta.url),
+    'utf8',
+  );
+  const payrollRepository = readFileSync(
+    new URL('../src/features/payroll/repository.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(attendanceRepository, /row\.version/);
+  assert.match(payrollRepository, /row\.version/);
+});
