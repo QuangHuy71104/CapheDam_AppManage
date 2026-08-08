@@ -1,6 +1,6 @@
 import type { UserRole } from '../shared/domain';
 import type { AttendanceSheet, BranchPayrollConfirmation } from '../features/attendance/model';
-import type { SupplyReportItem } from '../features/inventory/model';
+import type { IngredientReport } from '../features/inventory/model';
 import type { PlasticCupReport, StockBalanceReport } from '../features/closing/model';
 
 export type AttendanceType = 'clockIn' | 'clockOut';
@@ -13,22 +13,6 @@ export type AttendanceEvent = {
   type: AttendanceType;
 };
 
-export type IngredientReport = {
-  id: string;
-  branchId?: string;
-  reporterName?: string;
-  reporterRole?: UserRole;
-  itemName?: string;
-  unit?: string;
-  openingStock?: number;
-  received?: number;
-  used?: number;
-  wasted?: number;
-  currentStock?: number;
-  note: string;
-  timestamp: string;
-  items?: SupplyReportItem[];
-};
 
 export type ShiftCloseReport = {
   id: string;

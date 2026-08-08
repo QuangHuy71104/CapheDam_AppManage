@@ -87,7 +87,9 @@ import {
 import { isValidEmailAddress, minimumPasswordLength, normalizeEmailAddress } from './src/features/auth/domain';
 import { callAccountApi } from './src/shared/api/account-client';
 import { createSupplyState, supplyItems } from './src/features/inventory/catalog';
+import { listIngredientReports, saveIngredientReport as persistIngredientReport } from './src/features/inventory/repository';
 import type {
+  IngredientReport,
   SupplyItemConfig,
   SupplyItemInput,
   SupplyItemKind,
@@ -127,7 +129,6 @@ import {
   normalizeAppData,
   type AppData,
   type AttendanceEvent,
-  type IngredientReport,
   type ShiftCloseReport,
 } from './src/app/legacy-app-data';
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients' | 'staffManagement' | 'schedule';
@@ -739,7 +740,7 @@ const applyAttendanceScope = (profile: UserProfile) => {
   return request.order('month_key', { ascending: false });
 };
 
-const applyBranchScope = (tableName: 'ingredient_reports' | 'shift_close_reports' | 'branch_payroll_confirmations', profile: UserProfile) => {
+const applyBranchScope = (tableName: 'shift_close_reports' | 'branch_payroll_confirmations', profile: UserProfile) => {
   let request = supabase.from(tableName).select('*');
 
   if (profile.role !== 'owner' && profile.branchId) {
@@ -755,11 +756,10 @@ const loadAppDataFromSupabase = async (profile: UserProfile): Promise<AppData> =
     profile.role === 'employee'
       ? { data: [], error: null }
       : await applyBranchScope('branch_payroll_confirmations', profile).order('month_key', { ascending: false });
-  const ingredientsResult = await applyBranchScope('ingredient_reports', profile).order('reported_at', { ascending: false });
+  const ingredients = await listIngredientReports(profile);
   const closingsResult = await applyBranchScope('shift_close_reports', profile).order('reported_at', { ascending: false });
 
-  const remoteError =
-    attendanceResult.error ?? payrollResult.error ?? ingredientsResult.error ?? closingsResult.error;
+  const remoteError = attendanceResult.error ?? payrollResult.error ?? closingsResult.error;
 
   if (remoteError) {
     throw remoteError;
@@ -795,20 +795,6 @@ const loadAppDataFromSupabase = async (profile: UserProfile): Promise<AppData> =
     };
   });
 
-  const ingredients: IngredientReport[] = (ingredientsResult.data ?? []).map((item) => {
-    const row = item as Record<string, unknown>;
-
-    return {
-      id: String(row.id),
-      branchId: String(row.branch_id),
-      note: typeof row.note === 'string' ? row.note : '',
-      reporterName: typeof row.reporter_name === 'string' ? row.reporter_name : undefined,
-      reporterRole: normalizeRole(row.reporter_role),
-      timestamp: String(row.reported_at),
-      items: Array.isArray(row.items) ? (row.items as SupplyReportItem[]) : [],
-    };
-  });
-
   const closings: ShiftCloseReport[] = (closingsResult.data ?? []).map((item) => {
     const row = item as Record<string, unknown>;
     const payload =
@@ -839,7 +825,6 @@ const loadAppDataFromSupabase = async (profile: UserProfile): Promise<AppData> =
 const syncTableLabels: Record<string, string> = {
   attendance_sheets: 'bảng chấm công',
   branch_payroll_confirmations: 'xác nhận bảng lương',
-  ingredient_reports: 'báo đồ',
   shift_close_reports: 'báo ca',
 };
 
@@ -1000,12 +985,6 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, sna
   const snapshotPayrolls = deduplicateBranchPayrolls(snapshot.branchPayrolls).filter((confirmation) =>
     profile.role === 'owner' ? true : profile.role === 'manager' && confirmation.branchId === profile.branchId,
   );
-  const scopedIngredients = current.ingredients.filter((report) =>
-    profile.role === 'owner' ? true : getReportBranchId(report) === profile.branchId,
-  );
-  const snapshotIngredients = snapshot.ingredients.filter((report) =>
-    profile.role === 'owner' ? true : getReportBranchId(report) === profile.branchId,
-  );
   const scopedClosings = current.closings.filter((report) =>
     profile.role === 'owner' ? true : getReportBranchId(report) === profile.branchId,
   );
@@ -1017,7 +996,6 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, sna
   // snapshot can otherwise clear an employee confirmation made elsewhere.
   const changedAttendance = changedSinceSnapshot(scopedAttendance, snapshotAttendance);
   const changedPayrolls = changedSinceSnapshot(scopedPayrolls, snapshotPayrolls);
-  const changedIngredients = changedSinceSnapshot(scopedIngredients, snapshotIngredients);
   const changedClosings = changedSinceSnapshot(scopedClosings, snapshotClosings);
 
   const attendanceRows = changedAttendance.map((sheet) => ({
@@ -1042,16 +1020,6 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, sna
     auto_confirmed: Boolean(confirmation.autoConfirmed),
     updated_at: updatedAt,
   }));
-  const ingredientRows = changedIngredients.map((report) => ({
-    id: report.id,
-    branch_id: getReportBranchId(report),
-    reporter_name: report.reporterName ?? null,
-    reporter_role: report.reporterRole ?? null,
-    note: report.note,
-    reported_at: report.timestamp,
-    items: report.items ?? [],
-    updated_at: updatedAt,
-  }));
   const closingRows = changedClosings.map((report) => ({
     id: report.id,
     branch_id: getReportBranchId(report),
@@ -1063,7 +1031,6 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, sna
   const results = await Promise.allSettled([
     upsertSupabaseRows('attendance_sheets', attendanceRows),
     upsertSupabaseRows('branch_payroll_confirmations', payrollRows),
-    upsertSupabaseRows('ingredient_reports', ingredientRows),
     upsertSupabaseRows('shift_close_reports', closingRows),
   ]);
 
@@ -2020,6 +1987,7 @@ export default function App() {
           ? `branch_id=eq.${profile.branchId}`
           : undefined;
     const payrollFilter = profile.role === 'manager' && profile.branchId ? `branch_id=eq.${profile.branchId}` : undefined;
+    const ingredientFilter = profile.role !== 'owner' && profile.branchId ? `branch_id=eq.${profile.branchId}` : undefined;
     let channel = supabase.channel(`app-data-refresh-${profile.id}`);
 
     channel = channel.on(
@@ -2045,6 +2013,16 @@ export default function App() {
         requestRefresh,
       );
     }
+    channel = channel.on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'ingredient_reports',
+        ...(ingredientFilter ? { filter: ingredientFilter } : {}),
+      },
+      requestRefresh,
+    );
 
     channel.subscribe();
 
@@ -2497,6 +2475,14 @@ export default function App() {
         status: supplyRows[item.key]?.status ?? 'available',
       })),
     };
+
+    try {
+      await persistIngredientReport(report);
+    } catch (error) {
+      const message = getFriendlyErrorMessage(error, 'Chưa lưu được báo đồ. Vui lòng thử lại.');
+      Alert.alert('Chưa lưu được báo đồ', message);
+      return;
+    }
 
     setData((current) => ({
       ...current,
