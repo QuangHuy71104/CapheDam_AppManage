@@ -89,3 +89,15 @@ test('attendance persistence is feature-owned', () => {
   assert.match(repository, /listAttendanceSheets/);
   assert.match(repository, /from\('attendance_sheets'\)\.upsert/);
 });
+
+
+test('payroll confirmation persistence is feature-owned', () => {
+  assert.doesNotMatch(app, /\.from\('branch_payroll_confirmations'\)/);
+  const repository = readFileSync(
+    new URL('../src/features/payroll/repository.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(repository, /listBranchPayrollConfirmations/);
+  assert.match(repository, /from\('branch_payroll_confirmations'\)/);
+  assert.match(repository, /\.upsert/);
+});
