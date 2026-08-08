@@ -21,191 +21,37 @@ import {
   type StaffBranchAlias,
 } from './staff-management';
 
-type ScheduleShift = 'morning' | 'afternoon' | 'opening';
-type MorningEndHour = 9 | 10 | 11 | 12;
-
-type ScheduleAssignment = {
-  employeeId: string;
-  morningEndHour?: MorningEndHour;
-};
-
-type ScheduleSlots = Record<string, Partial<Record<ScheduleShift, ScheduleAssignment[]>>>;
-
-type WorkSchedule = {
-  id: string;
-  branchId: string;
-  managerId: string;
-  weekStart: string;
-  slots: ScheduleSlots;
-  updatedAt?: string;
-};
-
-export type PublishedScheduleAssignment = {
-  dateKey: string;
-  employeeId: string;
-  employeeName: string;
-  hours: number;
-  shift: ScheduleShift;
-};
-
-export type PublishedWorkSchedule = {
-  assignments: PublishedScheduleAssignment[];
-  branchId: string;
-  weekStart: string;
-};
-
-type ScheduleBranch = {
-  id: string;
-  name: string;
-  area: string;
-  address: string;
-};
-
-type ScheduleScreenProps = {
-  branch: ScheduleBranch;
-  managerId: string;
-  onPublish?: (schedule: PublishedWorkSchedule) => void | Promise<void>;
-};
-
-const palette = {
-  amber: '#B96524',
-  amberSoft: '#F6E3C8',
-  blue: '#617055',
-  blueSoft: '#DCE8D7',
-  canvas: '#F5EDE1',
-  deep: '#3F2416',
-  ink: '#23160F',
-  line: 'rgba(93, 61, 39, 0.16)',
-  lineStrong: 'rgba(93, 61, 39, 0.25)',
-  muted: '#6F5847',
-  onDark: '#FFF8EE',
-  primary: '#5F3723',
-  primarySoft: '#E7D3B8',
-  rose: '#B4483C',
-  surface: '#FFF9F1',
-  surfaceSoft: '#F3E9DA',
-  surfaceStrong: '#FFFCF7',
-  success: '#617055',
-};
-
-const shifts: ScheduleShift[] = ['morning', 'afternoon', 'opening'];
-const weekdayLabels = ['Chủ Nhật', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7'];
-const morningEndOptions: Array<{ endHour: MorningEndHour; hours: number; label: string }> = [
-  { endHour: 9, hours: 3, label: '9h · 3 giờ' },
-  { endHour: 10, hours: 4, label: '10h · 4 giờ' },
-  { endHour: 11, hours: 5, label: '11h · 5 giờ' },
-  { endHour: 12, hours: 6, label: 'Đủ ca · 6 giờ' },
-];
-
-const getDateKey = (date: Date) => {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
-const getLocalDate = (dateKey: string) => new Date(`${dateKey}T12:00:00`);
-
-const getMonday = (date = new Date()) => {
-  const copy = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12);
-  const shift = copy.getDay() === 0 ? -6 : 1 - copy.getDay();
-  copy.setDate(copy.getDate() + shift);
-  return copy;
-};
-
-const addDays = (date: Date, amount: number) => {
-  const copy = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12);
-  copy.setDate(copy.getDate() + amount);
-  return copy;
-};
-
-const formatShortDate = (date: Date) => `${date.getDate()}/${date.getMonth() + 1}`;
-
-const formatWeekRange = (weekStart: string) => {
-  const first = getLocalDate(weekStart);
-  const last = addDays(first, 6);
-  return `${formatShortDate(first)} – ${formatShortDate(last)}/${last.getFullYear()}`;
-};
-
-const createScheduleId = (managerId: string, branchId: string, weekStart: string) =>
-  `work-schedule-${managerId}-${branchId}-${weekStart}`;
-
-const createEmptySchedule = (managerId: string, branchId: string, weekStart: string): WorkSchedule => ({
-  id: createScheduleId(managerId, branchId, weekStart),
-  branchId,
-  managerId,
-  weekStart,
-  slots: {},
-});
-
-const isMorningEndHour = (value: unknown): value is MorningEndHour =>
-  value === 9 || value === 10 || value === 11 || value === 12;
-
-const normalizeAssignment = (value: unknown): ScheduleAssignment | null => {
-  // Schedules created by the previous version stored a plain employee ID.
-  // Keep them readable and save them in the richer object shape from now on.
-  if (typeof value === 'string' && value.trim()) {
-    return { employeeId: value };
-  }
-
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-
-  const row = value as Record<string, unknown>;
-  if (typeof row.employeeId !== 'string' || !row.employeeId.trim()) {
-    return null;
-  }
-
-  return {
-    employeeId: row.employeeId,
-    ...(isMorningEndHour(row.morningEndHour) ? { morningEndHour: row.morningEndHour } : {}),
-  };
-};
-
-const normalizeSlots = (value: unknown): ScheduleSlots => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return {};
-  }
-
-  return Object.entries(value as Record<string, unknown>).reduce<ScheduleSlots>((result, [dateKey, entry]) => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-      return result;
-    }
-
-    const normalizedEntry = shifts.reduce<Partial<Record<ScheduleShift, ScheduleAssignment[]>>>((daySlots, shift) => {
-      const rawSlot = (entry as Record<string, unknown>)[shift];
-      if (Array.isArray(rawSlot)) {
-        const assignments = rawSlot
-          .map(normalizeAssignment)
-          .filter((assignment): assignment is ScheduleAssignment => Boolean(assignment));
-        if (assignments.length > 0) {
-          daySlots[shift] = assignments;
-        }
-      }
-      return daySlots;
-    }, {});
-
-    if (Object.keys(normalizedEntry).length > 0) {
-      result[dateKey] = normalizedEntry;
-    }
-    return result;
-  }, {});
-};
-
-const getSlotAssignments = (slots: ScheduleSlots, dateKey: string, shift: ScheduleShift) =>
-  slots[dateKey]?.[shift] ?? [];
-
-const getMorningHours = (endHour: MorningEndHour | undefined) => (endHour ?? 12) - 6;
-
-const getAssignmentHours = (assignment: ScheduleAssignment, shift: ScheduleShift) => {
-  if (shift === 'morning') {
-    return getMorningHours(assignment.morningEndHour);
-  }
-  return shift === 'afternoon' ? 5 : 0.5;
-};
-
-const isSunday = (dateKey: string) => getLocalDate(dateKey).getDay() === 0;
+import {
+  addDays,
+  createEmptySchedule,
+  createScheduleId,
+  formatShortDate,
+  formatWeekRange,
+  getAssignmentHours,
+  getDateKey,
+  getLocalDate,
+  getMonday,
+  getMorningHours,
+  getSlotAssignments,
+  isMorningEndHour,
+  isSunday,
+  morningEndOptions,
+  normalizeAssignment,
+  normalizeSlots,
+  palette,
+  shifts,
+  weekdayLabels,
+  type MorningEndHour,
+  type PublishedScheduleAssignment,
+  type PublishedWorkSchedule,
+  type ScheduleAssignment,
+  type ScheduleBranch,
+  type ScheduleScreenProps,
+  type ScheduleShift,
+  type ScheduleSlots,
+  type WorkSchedule,
+} from '../src/features/schedule/core';
+export type { PublishedScheduleAssignment, PublishedWorkSchedule } from '../src/features/schedule/core';
 
 const readWorkSchedule = async (managerId: string, branchId: string, weekStart: string) => {
   const { data, error } = await supabase
