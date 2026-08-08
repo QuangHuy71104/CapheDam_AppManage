@@ -75,10 +75,19 @@ import {
   toNumber,
   trimTransferExpression,
 } from './src/shared/lib/numbers';
+import {
+  branches,
+  defaultBranchId,
+  payrollPolicy,
+  type Branch,
+  type EmploymentType,
+  type UserProfile,
+  type UserRole,
+} from './src/shared/domain';
+import { isValidEmailAddress, minimumPasswordLength, normalizeEmailAddress } from './src/features/auth/domain';
+import { callAccountApi } from './src/shared/api/account-client';
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients' | 'staffManagement' | 'schedule';
 type AppPage = { key: 'main' } | { key: 'managerPayrollEmployee'; employeeId: string };
-type UserRole = 'owner' | 'manager' | 'employee';
-type EmploymentType = 'full_time' | 'part_time';
 type AuthFeedback = {
   tone: 'success' | 'error' | 'info';
   title: string;
@@ -92,12 +101,6 @@ type AttendanceType = 'clockIn' | 'clockOut';
 type CupBalanceStatus = 'enough' | 'short' | 'over';
 type PlasticCupKey = 'small' | 'large' | 'icedTea';
 
-type Branch = {
-  id: string;
-  name: string;
-  area: string;
-  address: string;
-};
 
 type PlasticCupInput = {
   opening: string;
@@ -242,21 +245,6 @@ type AppData = {
   closings: ShiftCloseReport[];
 };
 
-type UserProfile = {
-  id: string;
-  email: string;
-  fullName: string;
-  role: UserRole;
-  branchId: string | null;
-  phone: string;
-  avatarUrl: string;
-  employmentType: EmploymentType;
-  startDate: string;
-  dateOfBirth: string;
-  hourlyRate: number;
-  allowance: number;
-  breakfastAllowance: number;
-};
 
 type PendingSignupDraft = {
   email: string;
@@ -276,47 +264,6 @@ const initialData: AppData = {
   ingredients: [],
   closings: [],
 };
-
-const branches: Branch[] = [
-  {
-    id: 'minh-khai-1',
-    name: 'Chi nhánh Minh Khai 1',
-    area: 'Nguyễn Thị Minh Khai',
-    address: '147A Nguyễn Thị Minh Khai, Phường Phạm Ngũ Lão, Bến Thành, Hồ Chí Minh',
-  },
-  {
-    id: 'minh-khai-2',
-    name: 'Chi nhánh Minh Khai 2',
-    area: 'Nguyễn Thị Minh Khai',
-    address: '123 Nguyễn Thị Minh Khai, Phường Phạm Ngũ Lão, Bến Thành, Hồ Chí Minh',
-  },
-  {
-    id: 'nam-ky-khoi-nghia',
-    name: 'Chi nhánh Nam Kỳ Khởi Nghĩa',
-    area: 'Nam Kỳ Khởi Nghĩa',
-    address: '151C Nam Kỳ Khởi Nghĩa, Phường 6, Xuân Hòa, Hồ Chí Minh',
-  },
-  {
-    id: 'dien-bien-phu',
-    name: 'Chi nhánh Điện Biên Phủ',
-    area: 'Điện Biên Phủ',
-    address: '435 Điện Biên Phủ, Phường 3, Bàn Cờ, Hồ Chí Minh',
-  },
-  {
-    id: 'pham-dinh-ho',
-    name: 'Chi nhánh Phạm Đình Hổ',
-    area: 'Phạm Đình Hổ',
-    address: '49 Phạm Đình Hổ, Phường 2, Bình Tây, Hồ Chí Minh',
-  },
-  {
-    id: 'tung-thien-vuong',
-    name: 'Chi nhánh Tùng Thiện Vương',
-    area: 'Tùng Thiện Vương',
-    address: '415 Tùng Thiện Vương, Phường Xóm Củi, Phú Định, Hồ Chí Minh',
-  },
-];
-
-const defaultBranchId = branches[0].id;
 
 const roleOptions: Array<{ key: UserRole; label: string; description: string; icon: typeof Clock3 }> = [
   {
@@ -339,11 +286,6 @@ const roleOptions: Array<{ key: UserRole; label: string; description: string; ic
   },
 ];
 
-const payrollPolicy = {
-  hourlyRate: 24000,
-  breakfastPerMorningShift: 27000,
-  monthlyAllowance: 200000,
-};
 
 const plasticCupTemplates: Array<{ key: PlasticCupKey; label: string }> = [
   { key: 'small', label: 'Ly nhỏ' },
@@ -806,12 +748,6 @@ const normalizeBranchId = (role: UserRole, value: unknown) => {
   return typeof value === 'string' && branches.some((branch) => branch.id === value) ? value : defaultBranchId;
 };
 
-const normalizeEmailAddress = (value: string) => value.trim().toLowerCase();
-
-const isValidEmailAddress = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-
-const minimumPasswordLength = 6;
-
 const normalizeEmploymentType = (value: unknown, role: UserRole): EmploymentType =>
   value === 'full_time' || value === 'part_time' ? value : role === 'owner' ? 'full_time' : 'part_time';
 
@@ -932,47 +868,6 @@ const mapProfileRow = (row: Record<string, unknown>, user: User): UserProfile =>
   };
 };
 
-const callAccountApi = async <T,>(method: 'GET' | 'PATCH', body?: Record<string, unknown>): Promise<T> => {
-  const sendRequest = (accessToken: string) =>
-    fetch('/api/account', {
-      body: body ? JSON.stringify(body) : undefined,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-      },
-      method,
-    });
-
-  const { data } = await supabase.auth.getSession();
-  let accessToken = data.session?.access_token;
-  if (!accessToken) {
-    const refreshed = await supabase.auth.refreshSession();
-    accessToken = refreshed.data.session?.access_token;
-  }
-  if (!accessToken) {
-    throw new Error('Phiên đăng nhập đã hết. Vui lòng đăng nhập lại.');
-  }
-
-  let response: Response;
-  try {
-    response = await sendRequest(accessToken);
-    if (response.status === 401) {
-      const refreshed = await supabase.auth.refreshSession();
-      const refreshedToken = refreshed.data.session?.access_token;
-      if (refreshedToken) {
-        response = await sendRequest(refreshedToken);
-      }
-    }
-  } catch {
-    throw new Error('Không kết nối được. Vui lòng kiểm tra mạng rồi thử lại.');
-  }
-
-  const result = (await response.json().catch(() => ({}))) as T & { message?: string };
-  if (!response.ok) {
-    throw new Error(result.message || 'Chưa thực hiện được. Vui lòng thử lại.');
-  }
-  return result;
-};
 
 const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | null): Promise<UserProfile> => {
   const { data: row, error } = await supabase
