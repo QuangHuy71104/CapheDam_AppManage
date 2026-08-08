@@ -120,6 +120,7 @@ import type {
   AttendanceSheet,
   BranchPayrollConfirmation,
 } from './src/features/attendance/model';
+import { listAttendanceSheets, saveAttendanceSheets } from './src/features/attendance/repository';
 import {
   calculateBranchPayroll,
   calculatePayroll,
@@ -728,18 +729,6 @@ const uploadProfileAvatar = async (profileId: string, image: Blob) => {
   return result.avatarUrl;
 };
 
-const applyAttendanceScope = (profile: UserProfile) => {
-  let request = supabase.from('attendance_sheets').select('*');
-
-  if (profile.role === 'manager' && profile.branchId) {
-    request = request.eq('branch_id', profile.branchId);
-  } else if (profile.role === 'employee') {
-    request = request.eq('user_id', profile.id);
-  }
-
-  return request.order('month_key', { ascending: false });
-};
-
 const applyBranchScope = (tableName: 'branch_payroll_confirmations', profile: UserProfile) => {
   let request = supabase.from(tableName).select('*');
 
@@ -751,33 +740,11 @@ const applyBranchScope = (tableName: 'branch_payroll_confirmations', profile: Us
 };
 
 const loadAppDataFromSupabase = async (profile: UserProfile): Promise<AppData> => {
-  const attendanceResult = await applyAttendanceScope(profile);
+  const attendanceSheets = await listAttendanceSheets(profile);
   const payrollResult =
     profile.role === 'employee'
       ? { data: [], error: null }
       : await applyBranchScope('branch_payroll_confirmations', profile).order('month_key', { ascending: false });
-
-  const remoteError = attendanceResult.error ?? payrollResult.error;
-
-  if (remoteError) {
-    throw remoteError;
-  }
-
-  const attendanceSheets: AttendanceSheet[] = (attendanceResult.data ?? []).map((item) => {
-    const row = item as Record<string, unknown>;
-
-    return {
-      id: String(row.id),
-      userId: typeof row.user_id === 'string' ? row.user_id : undefined,
-      branchId: String(row.branch_id),
-      employeeName: String(row.employee_name),
-      monthKey: String(row.month_key),
-      days: normalizeAttendanceDays(row.days),
-      employeeConfirmedAt: typeof row.employee_confirmed_at === 'string' ? row.employee_confirmed_at : undefined,
-      managerApprovedAt: typeof row.manager_approved_at === 'string' ? row.manager_approved_at : undefined,
-      managerApprovedBy: typeof row.manager_approved_by === 'string' ? row.manager_approved_by : undefined,
-    };
-  });
 
   const branchPayrolls: BranchPayrollConfirmation[] = (payrollResult.data ?? []).map((item) => {
     const row = item as Record<string, unknown>;
@@ -966,18 +933,6 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, sna
   const changedAttendance = changedSinceSnapshot(scopedAttendance, snapshotAttendance);
   const changedPayrolls = changedSinceSnapshot(scopedPayrolls, snapshotPayrolls);
 
-  const attendanceRows = changedAttendance.map((sheet) => ({
-    id: sheet.id,
-    user_id: sheet.userId ?? (profile.role === 'employee' ? profile.id : null),
-    branch_id: sheet.branchId,
-    employee_name: sheet.employeeName,
-    month_key: sheet.monthKey,
-      days: sheet.days,
-      employee_confirmed_at: sheet.employeeConfirmedAt ?? null,
-      manager_approved_at: sheet.managerApprovedAt ?? null,
-      manager_approved_by: sheet.managerApprovedBy ?? null,
-      updated_at: updatedAt,
-  }));
   const payrollRows = changedPayrolls.map((confirmation) => ({
     id: confirmation.id,
     branch_id: confirmation.branchId,
@@ -989,7 +944,7 @@ const syncAppDataToSupabase = async (current: AppData, profile: UserProfile, sna
     updated_at: updatedAt,
   }));
   const results = await Promise.allSettled([
-    upsertSupabaseRows('attendance_sheets', attendanceRows),
+    saveAttendanceSheets(changedAttendance, profile),
     upsertSupabaseRows('branch_payroll_confirmations', payrollRows),
   ]);
 
