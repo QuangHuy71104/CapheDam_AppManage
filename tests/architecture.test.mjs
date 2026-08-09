@@ -192,6 +192,16 @@ test('self-service profile creation is disabled by default', () => {
   assert.match(envExample, /VITE_ENABLE_PUBLIC_SIGNUP=false/);
 });
 
+test('login stays compact without overlapping decoration or persistent guidance', () => {
+  assert.doesNotMatch(app, /authHeroOrb/);
+  assert.doesNotMatch(app, /InstallAppBanner/);
+  assert.doesNotMatch(app, /Hệ thống đang hoạt động/);
+  assert.doesNotMatch(app, /Phiên đăng nhập được ghi nhớ/);
+  assert.match(app, /styles\.authSheetTitle.*Đăng nhập/);
+  assert.match(app, /label="Email"/);
+  assert.match(app, /label="Mật khẩu"/);
+});
+
 test('offline payroll workspace is isolated per authenticated user', () => {
   assert.match(app, /getPayrollWorkspaceStorageKey\(userId\)/);
   assert.match(app, /caphedam-payroll-workspace-v3:/);

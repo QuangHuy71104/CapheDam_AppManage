@@ -29,7 +29,6 @@ import {
   ClipboardList,
   Clock3,
   DoorClosed,
-  Download,
   Eye,
   EyeOff,
   History,
@@ -40,7 +39,6 @@ import {
   RefreshCcw,
   Save,
   ShieldCheck,
-  Smartphone,
   Store,
   UserCog,
   UserRound,
@@ -144,10 +142,6 @@ type AuthFeedback = {
   tone: 'success' | 'error' | 'info';
   title: string;
   message: string;
-};
-type BeforeInstallPromptEvent = Event & {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 };
 const publicSignupEnabled = import.meta.env.VITE_ENABLE_PUBLIC_SIGNUP === 'true';
 const StaffManagementScreen = lazy(() =>
@@ -2501,8 +2495,6 @@ export default function App() {
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            <InstallAppBanner />
-
             {authFeedback?.tone === 'success' ? (
               <AuthFeedbackBanner feedback={authFeedback} onDismiss={() => setAuthFeedback(null)} />
             ) : null}
@@ -3028,48 +3020,16 @@ function AuthScreen({
         >
           <View style={[styles.authViewport, viewportWidth >= 560 && styles.authViewportWide]}>
             <View style={styles.authHero}>
-              <View pointerEvents="none" style={styles.authHeroOrbLarge} />
-              <View pointerEvents="none" style={styles.authHeroOrbSmall} />
-
-              <View style={styles.authBrandRow}>
-                <View style={styles.authHeroLogoFrame}>
-                  <Image source={logoImage} style={styles.authHeroLogo} />
-                </View>
+              <View style={styles.authHeroLogoFrame}>
+                <Image source={logoImage} style={styles.authHeroLogo} />
               </View>
-
-              <View style={styles.authHeroCopy}>
-                <View style={styles.authSystemPill}>
-                  <View style={styles.authSystemDot} />
-                  <Text style={styles.authSystemText}>Hệ thống đang hoạt động</Text>
-                </View>
-                <Text style={styles.authHeroTitle}>
-                  {isSignIn ? 'Chào bạn,\nsẵn sàng vào ca?' : 'Bắt đầu tài khoản\nnhân viên'}
-                </Text>
-                <Text style={styles.authHeroSubtitle}>
-                  {isSignIn
-                    ? 'Đăng nhập để chấm công, báo đồ và hoàn tất công việc trong ca.'
-                    : 'Tạo tài khoản nhân viên và chọn đúng chi nhánh đang làm việc.'}
-                </Text>
-              </View>
+              <Text style={styles.authHeroTitle}>CÀ PHÊ ĐẬM</Text>
             </View>
 
             <View style={styles.authSheet}>
-              <View style={styles.authSheetHandle} />
-
               <View style={styles.authSheetHeader}>
-                <View style={styles.flex}>
-                  <Text style={styles.authSheetEyebrow}>{isSignIn ? 'ĐĂNG NHẬP NHANH' : 'TÀI KHOẢN MỚI'}</Text>
-                  <Text style={styles.authSheetTitle}>{isSignIn ? 'Vào hệ thống' : 'Tạo tài khoản'}</Text>
-                  <Text style={styles.authSheetHint}>
-                    {isSignIn ? 'Dùng tài khoản được quán cấp.' : 'Chỉ dành cho nhân viên của quán.'}
-                  </Text>
-                </View>
-                <View style={styles.authSheetIcon}>
-                  <DoorClosed color={colors.primary} size={22} />
-                </View>
+                <Text style={styles.authSheetTitle}>{isSignIn ? 'Đăng nhập' : 'Tạo tài khoản'}</Text>
               </View>
-
-              <InstallAppBanner />
 
               {feedback ? <AuthFeedbackBanner feedback={feedback} onDismiss={() => onAuthFeedbackChange(null)} /> : null}
 
@@ -3137,7 +3097,6 @@ function AuthScreen({
                     <Building2 color={colors.primary} size={18} />
                     <Text style={styles.authSectionTitle}>Chi nhánh làm việc</Text>
                   </View>
-                  <Text style={styles.authSectionHint}>Chọn đúng chi nhánh để nhận dữ liệu ca làm việc.</Text>
                   <BranchPills branchId={branchId} onBranchChange={handleBranchChange} />
                 </View>
               ) : null}
@@ -3159,19 +3118,6 @@ function AuthScreen({
                 </View>
               </Pressable>
 
-              {isSignIn ? (
-                <View style={styles.authSessionNote}>
-                  <ShieldCheck color={colors.blue} size={18} />
-                  <Text style={styles.authSessionNoteText}>
-                    Phiên đăng nhập được ghi nhớ trên thiết bị này. Mật khẩu không được lưu dạng đọc được.
-                  </Text>
-                </View>
-              ) : (
-                <Text style={styles.authSignupNote}>
-                  Tài khoản mới luôn có quyền Nhân viên. Quyền quản lí được cấp riêng sau đó.
-                </Text>
-              )}
-
               {publicSignupEnabled || !isSignIn ? (
                 <View style={styles.authSwitchRow}>
                   <Text style={styles.authSwitchPrompt}>
@@ -3185,12 +3131,8 @@ function AuthScreen({
                     <Text style={styles.authSwitchButtonText}>{isSignIn ? 'Tạo tài khoản' : 'Quay lại đăng nhập'}</Text>
                   </Pressable>
                 </View>
-              ) : (
-                <Text style={styles.authSignupNote}>Tài khoản nhân sự do quản lý cửa hàng cấp.</Text>
-              )}
+              ) : null}
             </View>
-
-            <Text style={styles.authFooter}>Chỉ dành cho nhân sự được cấp quyền</Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -3319,108 +3261,6 @@ function AuthFeedbackBanner({ feedback, onDismiss }: { feedback: AuthFeedback; o
         accessibilityRole="button"
         onPress={onDismiss}
         style={({ pressed }) => [styles.authFeedbackDismiss, pressed && styles.pressed]}
-      >
-        <X color={colors.muted} size={17} />
-      </Pressable>
-    </View>
-  );
-}
-
-function InstallAppBanner() {
-  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [installed, setInstalled] = useState(() => {
-    const navigatorWithStandalone = navigator as Navigator & { standalone?: boolean };
-    return window.matchMedia('(display-mode: standalone)').matches || navigatorWithStandalone.standalone === true;
-  });
-  const [dismissed, setDismissed] = useState(() => {
-    try {
-      return window.sessionStorage.getItem('caphedam-install-dismissed') === '1';
-    } catch {
-      return false;
-    }
-  });
-  const isIos =
-    /iPad|iPhone|iPod/i.test(navigator.userAgent) ||
-    (navigator.userAgent.includes('Macintosh') && navigator.maxTouchPoints > 1);
-
-  useEffect(() => {
-    const displayMode = window.matchMedia('(display-mode: standalone)');
-    const handleInstallAvailable = (event: Event) => {
-      event.preventDefault();
-      setInstallPrompt(event as BeforeInstallPromptEvent);
-    };
-    const handleInstalled = () => {
-      setInstalled(true);
-      setInstallPrompt(null);
-    };
-    const handleDisplayModeChange = () => setInstalled(displayMode.matches);
-
-    window.addEventListener('beforeinstallprompt', handleInstallAvailable);
-    window.addEventListener('appinstalled', handleInstalled);
-    displayMode.addEventListener?.('change', handleDisplayModeChange);
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleInstallAvailable);
-      window.removeEventListener('appinstalled', handleInstalled);
-      displayMode.removeEventListener?.('change', handleDisplayModeChange);
-    };
-  }, []);
-
-  if (installed || dismissed || (!installPrompt && !isIos)) {
-    return null;
-  }
-
-  const dismiss = () => {
-    setDismissed(true);
-    try {
-      window.sessionStorage.setItem('caphedam-install-dismissed', '1');
-    } catch {
-      // Private browsing may not expose storage; dismissing still works for the current render.
-    }
-  };
-
-  const requestInstall = async () => {
-    if (!installPrompt) {
-      return;
-    }
-
-    await installPrompt.prompt();
-    const choice = await installPrompt.userChoice;
-    setInstallPrompt(null);
-
-    if (choice.outcome === 'accepted') {
-      setInstalled(true);
-    }
-  };
-
-  return (
-    <View className="app-install-card" style={styles.installCard}>
-      <View style={styles.installIcon}>
-        <Smartphone color={colors.primary} size={21} />
-      </View>
-      <View style={styles.installCopy}>
-        <Text style={styles.installTitle}>Cài ứng dụng</Text>
-        <Text style={styles.installText}>
-          {installPrompt
-            ? 'Thêm vào màn hình chính để mở toàn màn hình như một ứng dụng.'
-            : 'Trên iPhone/iPad: nhấn Chia sẻ, rồi chọn “Thêm vào MH chính”.'}
-        </Text>
-        {installPrompt ? (
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => void requestInstall()}
-            style={({ pressed }) => [styles.installButton, pressed && styles.pressed]}
-          >
-            <Download color={colors.onDark} size={16} />
-            <Text style={styles.installButtonText}>Cài ứng dụng</Text>
-          </Pressable>
-        ) : null}
-      </View>
-      <Pressable
-        accessibilityLabel="Ẩn hướng dẫn cài ứng dụng"
-        accessibilityRole="button"
-        onPress={dismiss}
-        style={({ pressed }) => [styles.installDismiss, pressed && styles.pressed]}
       >
         <X color={colors.muted} size={17} />
       </Pressable>
