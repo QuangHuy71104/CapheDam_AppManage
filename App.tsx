@@ -3008,130 +3008,186 @@ function AuthScreen({
       ? 'Tạo tài khoản nhân viên'
       : 'Đăng nhập';
   const isSignIn = mode === 'signIn';
+  const useCardAuthLayout = viewportWidth >= 560;
+  const useWideAuthLayout = viewportWidth >= 1024;
 
   return (
     <SafeAreaView style={[styles.safeArea, styles.authSafeArea]}>
-      <StatusBar backgroundColor={colors.primary} style="light" />
+      <StatusBar backgroundColor="#2D1811" style="light" />
       <KeyboardAvoidingView style={styles.keyboardView}>
         <ScrollView
-          contentContainerStyle={styles.authScrollContent}
+          contentContainerStyle={[
+            styles.authScrollContent,
+            useCardAuthLayout && styles.authScrollContentCard,
+            useWideAuthLayout && styles.authScrollContentWide,
+          ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View style={[styles.authViewport, viewportWidth >= 560 && styles.authViewportWide]}>
-            <View style={styles.authHero}>
-              <View style={styles.authHeroLogoFrame}>
-                <Image source={logoImage} style={styles.authHeroLogo} />
+          <View
+            style={[
+              styles.authViewport,
+              useCardAuthLayout && styles.authViewportCard,
+              useWideAuthLayout && styles.authViewportWide,
+            ]}
+          >
+            <View style={[styles.authHero, useWideAuthLayout && styles.authHeroWide]}>
+              <View style={[styles.authBrandLockup, useWideAuthLayout && styles.authBrandLockupWide]}>
+                <View style={[styles.authHeroLogoFrame, useWideAuthLayout && styles.authHeroLogoFrameWide]}>
+                  <Image source={logoImage} style={styles.authHeroLogo} />
+                </View>
+                <View style={styles.authBrandCopy}>
+                  <Text style={styles.authBrandName}>Cà phê Đạm</Text>
+                  <Text style={styles.authBrandKicker}>QUẢN LÝ VẬN HÀNH</Text>
+                </View>
               </View>
-              <Text style={styles.authHeroTitle}>CÀ PHÊ ĐẬM</Text>
+
+              {useWideAuthLayout ? (
+                <View style={styles.authHeroMessage}>
+                  <Text style={styles.authHeroTitle}>Vận hành gọn gàng.{`\n`}Mỗi ca thật chỉn chu.</Text>
+                  <Text style={styles.authHeroDescription}>
+                    Một không gian thống nhất để đội ngũ phối hợp công việc mỗi ngày.
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.authHeroDescriptionMobile}>Không gian làm việc dành cho đội ngũ cửa hàng</Text>
+              )}
+
+              {useWideAuthLayout ? (
+                <View style={styles.authHeroFeatures}>
+                  <View style={styles.authHeroFeature}>
+                    <Clock3 color="#F2C66D" size={17} />
+                    <Text style={styles.authHeroFeatureText}>Ca làm</Text>
+                  </View>
+                  <View style={styles.authHeroFeature}>
+                    <ClipboardCheck color="#F2C66D" size={17} />
+                    <Text style={styles.authHeroFeatureText}>Báo cáo ca</Text>
+                  </View>
+                  <View style={styles.authHeroFeature}>
+                    <UsersRound color="#F2C66D" size={17} />
+                    <Text style={styles.authHeroFeatureText}>Nhân sự</Text>
+                  </View>
+                </View>
+              ) : null}
             </View>
 
-            <View style={styles.authSheet}>
-              <View style={styles.authSheetHeader}>
-                <Text style={styles.authSheetTitle}>{isSignIn ? 'Đăng nhập' : 'Tạo tài khoản'}</Text>
-              </View>
+            <View style={[styles.authSheet, useWideAuthLayout && styles.authSheetWide]}>
+              <View style={styles.authForm}>
+                <View style={styles.authSheetHeader}>
+                  <View style={styles.authSheetCopy}>
+                    <Text style={styles.authSheetEyebrow}>{isSignIn ? 'CHÀO MỪNG TRỞ LẠI' : 'TÀI KHOẢN NHÂN VIÊN'}</Text>
+                    <Text aria-level={1} accessibilityRole="heading" style={styles.authSheetTitle}>{isSignIn ? 'Đăng nhập' : 'Tạo tài khoản'}</Text>
+                    <Text style={styles.authSheetSubtitle}>
+                      {isSignIn ? 'Nhập tài khoản nội bộ để tiếp tục.' : 'Điền thông tin để bắt đầu làm việc.'}
+                    </Text>
+                  </View>
+                  <View style={styles.authSheetIcon}>
+                    <LockKeyhole color={colors.primary} size={21} />
+                  </View>
+                </View>
 
-              {feedback ? <AuthFeedbackBanner feedback={feedback} onDismiss={() => onAuthFeedbackChange(null)} /> : null}
+                {feedback ? <AuthFeedbackBanner feedback={feedback} onDismiss={() => onAuthFeedbackChange(null)} /> : null}
 
-              <View style={styles.authFields}>
-                {!isSignIn ? (
+                <View style={styles.authFields}>
+                  {!isSignIn ? (
+                    <AuthFormField
+                      autoComplete="name"
+                      autoCapitalize="words"
+                      autoCorrect={false}
+                      icon={UserRound}
+                      label="Họ và tên"
+                      nativeID="full-name"
+                      onChangeText={handleFullNameChange}
+                      onSubmitEditing={() => emailInputRef.current?.focus()}
+                      placeholder="Tên hiển thị trong bảng công"
+                      returnKeyType="next"
+                      textContentType="name"
+                      value={fullName}
+                    />
+                  ) : null}
+
                   <AuthFormField
-                    autoComplete="name"
-                    autoCapitalize="words"
+                    autoComplete="email"
+                    autoCapitalize="none"
                     autoCorrect={false}
-                    icon={UserRound}
-                    label="Họ và tên"
-                    nativeID="full-name"
-                    onChangeText={handleFullNameChange}
-                    onSubmitEditing={() => emailInputRef.current?.focus()}
-                    placeholder="Tên hiển thị trong bảng công"
+                    icon={Mail}
+                    inputRef={emailInputRef}
+                    keyboardType="email-address"
+                    label="Email"
+                    nativeID="email"
+                    onChangeText={handleEmailChange}
+                    onSubmitEditing={() => passwordInputRef.current?.focus()}
+                    placeholder="ten@congty.com"
                     returnKeyType="next"
-                    textContentType="name"
-                    value={fullName}
+                    textContentType="emailAddress"
+                    value={email}
                   />
+
+                  <AuthFormField
+                    autoComplete={isSignIn ? 'current-password' : 'new-password'}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    icon={KeyRound}
+                    inputRef={passwordInputRef}
+                    label="Mật khẩu"
+                    nativeID={isSignIn ? 'current-password' : 'new-password'}
+                    onChangeText={setPassword}
+                    onSubmitEditing={() => void submit()}
+                    placeholder={`Ít nhất ${minimumPasswordLength} ký tự`}
+                    returnKeyType="go"
+                    secureTextEntry={!showPassword}
+                    textContentType={isSignIn ? 'password' : 'newPassword'}
+                    trailingAction={{
+                      icon: showPassword ? EyeOff : Eye,
+                      label: showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu',
+                      onPress: () => setShowPassword((visible) => !visible),
+                    }}
+                    value={password}
+                  />
+                </View>
+
+                {!isSignIn ? (
+                  <View style={styles.authBranchSection}>
+                    <View style={styles.authSectionHeading}>
+                      <Building2 color={colors.primary} size={18} />
+                      <Text style={styles.authSectionTitle}>Chi nhánh làm việc</Text>
+                    </View>
+                    <BranchPills branchId={branchId} onBranchChange={handleBranchChange} />
+                  </View>
                 ) : null}
 
-                <AuthFormField
-                  autoComplete="email"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  icon={Mail}
-                  inputRef={emailInputRef}
-                  keyboardType="email-address"
-                  label="Email"
-                  nativeID="email"
-                  onChangeText={handleEmailChange}
-                  onSubmitEditing={() => passwordInputRef.current?.focus()}
-                  placeholder="ten@congty.com"
-                  returnKeyType="next"
-                  textContentType="emailAddress"
-                  value={email}
-                />
-
-                <AuthFormField
-                  autoComplete={isSignIn ? 'current-password' : 'new-password'}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  icon={KeyRound}
-                  inputRef={passwordInputRef}
-                  label="Mật khẩu"
-                  nativeID={isSignIn ? 'current-password' : 'new-password'}
-                  onChangeText={setPassword}
-                  onSubmitEditing={() => void submit()}
-                  placeholder={`Ít nhất ${minimumPasswordLength} ký tự`}
-                  returnKeyType="go"
-                  secureTextEntry={!showPassword}
-                  textContentType={isSignIn ? 'password' : 'newPassword'}
-                  trailingAction={{
-                    icon: showPassword ? EyeOff : Eye,
-                    label: showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu',
-                    onPress: () => setShowPassword((visible) => !visible),
-                  }}
-                  value={password}
-                />
-              </View>
-
-              {!isSignIn ? (
-                <View style={styles.authBranchSection}>
-                  <View style={styles.authSectionHeading}>
-                    <Building2 color={colors.primary} size={18} />
-                    <Text style={styles.authSectionTitle}>Chi nhánh làm việc</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: loading }}
+                  disabled={loading}
+                  onPress={() => void submit()}
+                  style={({ pressed }) => [
+                    styles.authPrimaryButton,
+                    loading && styles.authPrimaryButtonDisabled,
+                    pressed && styles.authPrimaryButtonPressed,
+                  ]}
+                >
+                  <Text style={styles.authPrimaryButtonText}>{submitLabel}</Text>
+                  <View style={styles.authPrimaryButtonIcon}>
+                    <ArrowRight color={colors.primary} size={18} strokeWidth={2.6} />
                   </View>
-                  <BranchPills branchId={branchId} onBranchChange={handleBranchChange} />
-                </View>
-              ) : null}
+                </Pressable>
 
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ disabled: loading }}
-                disabled={loading}
-                onPress={() => void submit()}
-                style={({ pressed }) => [
-                  styles.authPrimaryButton,
-                  loading && styles.authPrimaryButtonDisabled,
-                  pressed && styles.authPrimaryButtonPressed,
-                ]}
-              >
-                <Text style={styles.authPrimaryButtonText}>{submitLabel}</Text>
-                <View style={styles.authPrimaryButtonIcon}>
-                  <ArrowRight color={colors.primary} size={18} strokeWidth={2.6} />
-                </View>
-              </Pressable>
-
-              {publicSignupEnabled || !isSignIn ? (
-                <View style={styles.authSwitchRow}>
-                  <Text style={styles.authSwitchPrompt}>
-                    {isSignIn ? 'Chưa có tài khoản?' : 'Đã có tài khoản?'}
-                  </Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => handleModeChange(isSignIn ? 'signUp' : 'signIn')}
-                    style={({ pressed }) => [styles.authSwitchButton, pressed && styles.pressed]}
-                  >
-                    <Text style={styles.authSwitchButtonText}>{isSignIn ? 'Tạo tài khoản' : 'Quay lại đăng nhập'}</Text>
-                  </Pressable>
-                </View>
-              ) : null}
+                {publicSignupEnabled || !isSignIn ? (
+                  <View style={styles.authSwitchRow}>
+                    <Text style={styles.authSwitchPrompt}>
+                      {isSignIn ? 'Chưa có tài khoản?' : 'Đã có tài khoản?'}
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => handleModeChange(isSignIn ? 'signUp' : 'signIn')}
+                      style={({ pressed }) => [styles.authSwitchButton, pressed && styles.pressed]}
+                    >
+                      <Text style={styles.authSwitchButtonText}>{isSignIn ? 'Tạo tài khoản' : 'Quay lại đăng nhập'}</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+              </View>
             </View>
           </View>
         </ScrollView>
@@ -3202,7 +3258,7 @@ function AuthFormField({
           onFocus={() => setFocused(true)}
           onSubmitEditing={onSubmitEditing}
           placeholder={placeholder}
-          placeholderTextColor="#9B897C"
+          placeholderTextColor="#756154"
           ref={inputRef}
           returnKeyType={returnKeyType}
           secureTextEntry={secureTextEntry}

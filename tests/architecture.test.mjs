@@ -3,6 +3,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const app = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+const workSchedule = readFileSync(
+  new URL('../src/features/schedule/WorkScheduleScreen.tsx', import.meta.url),
+  'utf8',
+);
 
 test('owner refresh is not wired to destructive reset', () => {
   assert.doesNotMatch(app, /onPress=\{clearAllData\}/);
@@ -200,6 +204,13 @@ test('login stays compact without overlapping decoration or persistent guidance'
   assert.match(app, /styles\.authSheetTitle.*Đăng nhập/);
   assert.match(app, /label="Email"/);
   assert.match(app, /label="Mật khẩu"/);
+});
+
+test('customer-facing brand copy consistently uses Cà phê Đạm', () => {
+  const brandedScreens = `${app}\n${workSchedule}`;
+  assert.doesNotMatch(brandedScreens, /Cà phê Đ\u1eadm|CÀ PHÊ Đ\u1eacM/);
+  assert.match(app, />Cà phê Đạm</);
+  assert.match(workSchedule, /Lịch làm · Cà phê Đạm/);
 });
 
 test('offline payroll workspace is isolated per authenticated user', () => {

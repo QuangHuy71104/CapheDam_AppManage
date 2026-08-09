@@ -818,7 +818,7 @@ function ScheduleExportPreview({
       })}
       <View style={styles.exportFooter}>
         <Download color={palette.muted} size={13} />
-        <Text style={styles.exportFooterText}>Lịch làm · Cà phê Đậm</Text>
+        <Text style={styles.exportFooterText}>Lịch làm · Cà phê Đạm</Text>
       </View>
     </View>
   );
