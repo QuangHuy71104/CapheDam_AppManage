@@ -5,7 +5,7 @@ Web app/PWA nội bộ, xây bằng React DOM + Vite và tối ưu cho nhân vi�
 ## Chức năng chính
 
 - Ba vai trò: chủ cửa hàng, quản lý chi nhánh và nhân viên.
-- Đăng nhập, tạo tài khoản nhân viên và quản lý phiên bằng Supabase Auth.
+- Đăng nhập và quản lý phiên bằng Supabase Auth; tài khoản nội bộ do quản trị viên cấp.
 - Form đăng nhập mobile-first, vùng chạm lớn, hỗ trợ autofill và trình quản lý mật khẩu của trình duyệt.
 - Đổi mật khẩu sau khi xác thực lại mật khẩu hiện tại. Mật khẩu không được lưu dạng đọc được trong localStorage hay cơ sở dữ liệu ứng dụng.
 - Hồ sơ tài khoản với avatar, số điện thoại, vị trí, chi nhánh, hình thức làm việc và thâm niên.
@@ -25,19 +25,18 @@ Web app/PWA nội bộ, xây bằng React DOM + Vite và tối ưu cho nhân vi�
 ## Cấu hình Supabase
 
 1. Bật Email provider trong Authentication → Providers. Với ứng dụng nội bộ không gửi email xác nhận, tắt `Confirm email`.
-2. Chạy [database/supabase-schema.sql](database/supabase-schema.sql) trong SQL Editor để tạo bảng, dữ liệu chi nhánh và chính sách RLS.
-3. Sao chép `.env.example` thành `.env` và điền hai biến:
+2. Áp dụng lần lượt các migration trong [supabase/migrations](supabase/migrations). Với dự án cũ đã có schema, đọc [hướng dẫn migration](supabase/README.md) trước khi áp dụng baseline.
+3. Sao chép `.env.example` thành `.env` và điền các biến:
 
 ```dotenv
 VITE_SUPABASE_URL=https://your-project-ref.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-or-publishable-key
+VITE_ENABLE_PUBLIC_SIGNUP=false
 ```
 
 Các API quản lí nhân sự và tạo dữ liệu thử nghiệm cần thêm `SUPABASE_SECRET_KEY` (hoặc `SUPABASE_SERVICE_ROLE_KEY`) ở biến môi trường **server** của Vercel/.env.local. Không đặt khóa này ở biến `VITE_*` hay đưa lên trình duyệt.
 
-Tài khoản tạo trong web mặc định là `employee`. Sau khi tạo tài khoản, dùng các câu lệnh mẫu cuối file SQL để cấp quyền `manager` hoặc `owner`. Khi đã tạo đủ tài khoản nhân sự, nên tắt public signup trong Supabase.
-
-Khi cập nhật từ phiên bản cũ, chạy lại toàn bộ `database/supabase-schema.sql`. Script có thể chạy lặp lại và sẽ bổ sung các cột hồ sơ, hàm cập nhật an toàn cùng bucket `avatars` mà không xóa dữ liệu vận hành hiện có.
+Public signup bị khóa mặc định ở giao diện và policy `profiles`. Hãy tạo tài khoản bằng luồng quản trị/server tin cậy, sau đó gán đúng vai trò và chi nhánh; không bật `VITE_ENABLE_PUBLIC_SIGNUP` khi policy cấp hồ sơ tự phục vụ chưa được thiết kế lại.
 
 ## Chạy local
 
@@ -71,10 +70,11 @@ Sau khi chạy lại `database/supabase-schema.sql`, đăng nhập bằng tài k
 ## Kiểm tra và build
 
 ```bash
-npm run typecheck
-npm run build
+npm run check
 npm run preview
 ```
+
+`npm run check` chạy lint, typecheck, architecture/business/UI tests và production build. CI chạy cùng các bước trên cho mọi push và pull request.
 
 Build production nằm trong `dist`. Vercel dùng `npm run build` và tự phục vụ fallback về `index.html` cho web app.
 

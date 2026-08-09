@@ -92,7 +92,8 @@ test('attendance persistence is feature-owned', () => {
     'utf8',
   );
   assert.match(repository, /listAttendanceSheets/);
-  assert.match(repository, /from\('attendance_sheets'\)\.upsert/);
+  assert.match(repository, /rpc\('save_attendance_sheet_cas'/);
+  assert.doesNotMatch(repository, /from\('attendance_sheets'\)\.upsert/);
 });
 
 
@@ -104,7 +105,8 @@ test('payroll confirmation persistence is feature-owned', () => {
   );
   assert.match(repository, /listBranchPayrollConfirmations/);
   assert.match(repository, /from\('branch_payroll_confirmations'\)/);
-  assert.match(repository, /\.upsert/);
+  assert.match(repository, /rpc\('save_branch_payroll_cas'/);
+  assert.doesNotMatch(repository, /from\('branch_payroll_confirmations'\)[\s\S]*\.upsert/);
 });
 
 
@@ -138,4 +140,56 @@ test('concurrency metadata is represented in payroll models', () => {
   );
   assert.match(attendanceRepository, /row\.version/);
   assert.match(payrollRepository, /row\.version/);
+});
+
+test('sensitive payroll writes use compare-and-swap database functions', () => {
+  const migration = readFileSync(
+    new URL('../supabase/migrations/202608091930_security_cas.sql', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(migration, /save_attendance_sheet_cas/);
+  assert.match(migration, /save_branch_payroll_cas/);
+  assert.match(migration, /where id = p_id and version = p_expected_version/);
+  assert.match(migration, /Employees cannot change manager approval/);
+  assert.match(migration, /revoke execute on function public\.append_audit_log/);
+  assert.match(migration, /auto_confirm_due_payrolls/);
+  assert.match(migration, /current_date/);
+});
+
+test('operational reads are bounded and support scoped filters', () => {
+  for (const path of [
+    'src/features/inventory/repository.ts',
+    'src/features/closing/repository.ts',
+    'src/features/attendance/repository.ts',
+    'src/features/payroll/repository.ts',
+  ]) {
+    const repository = readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+    assert.match(repository, /\.range\(offset, offset \+ limit - 1\)/, `${path} must paginate reads`);
+  }
+});
+
+test('self-service profile creation is disabled by default', () => {
+  const migration = readFileSync(
+    new URL('../supabase/migrations/202608091930_security_cas.sql', import.meta.url),
+    'utf8',
+  );
+  const envExample = readFileSync(new URL('../.env.example', import.meta.url), 'utf8');
+  assert.match(migration, /drop policy if exists "profiles_insert_own_employee"/);
+  assert.match(envExample, /VITE_ENABLE_PUBLIC_SIGNUP=false/);
+});
+
+test('offline payroll workspace is isolated per authenticated user', () => {
+  assert.match(app, /getPayrollWorkspaceStorageKey\(userId\)/);
+  assert.match(app, /caphedam-payroll-workspace-v3:/);
+  assert.doesNotMatch(app, /PAYROLL_WORKSPACE_STORAGE_KEY/);
+});
+
+test('legacy staff and schedule modules are compatibility facades', () => {
+  const staffFacade = readFileSync(new URL('../lib/staff-management.ts', import.meta.url), 'utf8');
+  const scheduleFacade = readFileSync(new URL('../lib/work-schedule.tsx', import.meta.url), 'utf8');
+  assert.match(staffFacade, /^export \* from/);
+  assert.match(scheduleFacade, /^export \* from/);
+  assert.equal(existsSync(new URL('../src/features/staff/repository.ts', import.meta.url)), true);
+  assert.equal(existsSync(new URL('../src/features/schedule/WorkScheduleScreen.tsx', import.meta.url)), true);
 });

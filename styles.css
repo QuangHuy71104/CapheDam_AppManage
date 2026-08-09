@@ -73,6 +73,15 @@ textarea {
   outline: 0;
 }
 
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid #b96524;
+  outline-offset: 2px;
+}
+
 textarea {
   resize: vertical;
 }

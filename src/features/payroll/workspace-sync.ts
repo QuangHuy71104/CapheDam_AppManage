@@ -65,6 +65,11 @@ const changedSinceSnapshot = <T extends { id: string }>(current: T[], snapshot: 
   return current.filter((item) => JSON.stringify(item) !== JSON.stringify(snapshotById.get(item.id)));
 };
 
+const replaceSavedRows = <T extends { id: string }>(current: T[], saved: T[]) => {
+  const savedById = new Map(saved.map((item) => [item.id, item]));
+  return current.map((item) => savedById.get(item.id) ?? item);
+};
+
 export const syncPayrollWorkspace = async (
   current: PayrollWorkspaceShape,
   profile: UserProfile,
@@ -119,4 +124,11 @@ export const syncPayrollWorkspace = async (
   if (errors.length > 0) {
     throw new Error(errors.join('\n'));
   }
+
+  const savedAttendance = results[0].status === 'fulfilled' ? results[0].value : [];
+  const savedPayrolls = results[1].status === 'fulfilled' ? results[1].value : [];
+  return {
+    attendanceSheets: replaceSavedRows(current.attendanceSheets, savedAttendance),
+    branchPayrolls: replaceSavedRows(current.branchPayrolls, savedPayrolls),
+  };
 };

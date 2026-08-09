@@ -21,17 +21,25 @@ const mapBranchPayrollConfirmation = (item: unknown): BranchPayrollConfirmation 
 
 export const listBranchPayrollConfirmations = async (
   profile: UserProfile,
+  query: { branchId?: string; monthKey?: string; limit?: number; offset?: number } = {},
 ): Promise<BranchPayrollConfirmation[]> => {
   if (profile.role === 'employee') {
     return [];
   }
 
+  const limit = Math.min(Math.max(query.limit ?? 120, 1), 500);
+  const offset = Math.max(query.offset ?? 0, 0);
   let request = supabase.from('branch_payroll_confirmations').select('*');
   if (profile.role === 'manager' && profile.branchId) {
     request = request.eq('branch_id', profile.branchId);
   }
 
-  const { data, error } = await request.order('month_key', { ascending: false });
+  if (profile.role === 'owner' && query.branchId) request = request.eq('branch_id', query.branchId);
+  if (query.monthKey) request = request.eq('month_key', query.monthKey);
+
+  const { data, error } = await request
+    .order('month_key', { ascending: false })
+    .range(offset, offset + limit - 1);
   if (error) {
     throw error;
   }
@@ -39,29 +47,38 @@ export const listBranchPayrollConfirmations = async (
   return (data ?? []).map(mapBranchPayrollConfirmation);
 };
 
-export const saveBranchPayrollConfirmations = async (
-  confirmations: BranchPayrollConfirmation[],
-): Promise<void> => {
-  if (confirmations.length === 0) {
-    return;
-  }
-
-  const rows = confirmations.map((confirmation) => ({
-    id: confirmation.id,
-    branch_id: confirmation.branchId,
-    month_key: confirmation.monthKey,
-    manager_confirmed_at: confirmation.managerConfirmedAt ?? null,
-    manager_cancelled_at: confirmation.managerCancelledAt ?? null,
-    manager_name: confirmation.managerName ?? null,
-    auto_confirmed: Boolean(confirmation.autoConfirmed),
-    updated_at: new Date().toISOString(),
-  }));
-
-  const { error } = await supabase
-    .from('branch_payroll_confirmations')
-    .upsert(rows, { onConflict: 'id' });
-
+export const autoConfirmDuePayrolls = async (): Promise<BranchPayrollConfirmation[]> => {
+  const { data, error } = await supabase.rpc('auto_confirm_due_payrolls');
   if (error) {
     throw error;
   }
+  return (data ?? []).map(mapBranchPayrollConfirmation);
+};
+
+export const saveBranchPayrollConfirmations = async (
+  confirmations: BranchPayrollConfirmation[],
+): Promise<BranchPayrollConfirmation[]> => {
+  if (confirmations.length === 0) {
+    return [];
+  }
+
+  return Promise.all(
+    confirmations.map(async (confirmation) => {
+      const { data, error } = await supabase.rpc('save_branch_payroll_cas', {
+        p_id: confirmation.id,
+        p_branch_id: confirmation.branchId,
+        p_month_key: confirmation.monthKey,
+        p_manager_confirmed_at: confirmation.managerConfirmedAt ?? null,
+        p_manager_cancelled_at: confirmation.managerCancelledAt ?? null,
+        p_manager_name: confirmation.managerName ?? null,
+        p_auto_confirmed: Boolean(confirmation.autoConfirmed),
+        p_expected_version: confirmation.version ?? null,
+      });
+
+      if (error) {
+        throw error;
+      }
+      return mapBranchPayrollConfirmation(data);
+    }),
+  );
 };

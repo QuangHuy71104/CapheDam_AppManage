@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, RefreshCcw, Save, ShieldCheck, Store, UserCog, UserRound, UsersRound } from 'lucide-react';
+import { ChevronDown, ChevronUp, RefreshCcw, Save, ShieldCheck, Store, UserCog, UsersRound } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from '../../../lib/web-ui';
 import {
@@ -12,7 +12,7 @@ import {
   type ManagedStaffProfile,
   type StaffBranchAlias,
   type StaffRole,
-} from '../../../lib/staff-management';
+} from './repository';
 
 import { colors } from '../../shared/ui/theme';
 export type StaffManagementBranch = {

@@ -15,8 +15,8 @@ import {
   type Ref,
 } from 'react';
 
-type LooseStyle = Record<string, any>;
-type StyleValue = LooseStyle | false | null | undefined | StyleValue[];
+type LooseStyle = Record<string, unknown>;
+type StyleValue = LooseStyle | false | '' | null | undefined | StyleValue[];
 
 const addOpacity = (color: unknown, opacity: unknown) => {
   if (typeof color !== 'string' || typeof opacity !== 'number' || opacity >= 1) {
@@ -141,17 +141,46 @@ type ViewProps = Omit<HTMLAttributes<HTMLDivElement>, 'style'> &
   };
 
 export const View = forwardRef<HTMLDivElement, ViewProps>(function View(
-  { accessibilityLabel, accessibilityRole, accessibilityState, children, collapsable: _collapsable, pointerEvents, style, ...props },
+  {
+    accessibilityLabel,
+    accessibilityRole,
+    accessibilityState,
+    children,
+    collapsable: _collapsable,
+    onKeyDown,
+    pointerEvents,
+    style,
+    tabIndex,
+    ...props
+  },
   ref,
 ) {
+  const isInteractive = accessibilityRole === 'button' || accessibilityRole === 'tab';
   return (
+    // This compatibility primitive can carry dynamic RN-style roles. Keyboard
+    // activation and focusability are supplied above for interactive roles.
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
     <div
       {...props}
       aria-disabled={accessibilityState?.disabled}
       aria-label={accessibilityLabel}
+      aria-modal={accessibilityRole === 'dialog' ? true : undefined}
       aria-selected={accessibilityState?.selected}
+      onKeyDown={(event) => {
+        onKeyDown?.(event);
+        if (
+          !event.defaultPrevented &&
+          isInteractive &&
+          !accessibilityState?.disabled &&
+          (event.key === 'Enter' || event.key === ' ')
+        ) {
+          event.preventDefault();
+          event.currentTarget.click();
+        }
+      }}
       ref={ref}
       role={accessibilityRole}
+      tabIndex={tabIndex ?? (isInteractive && !accessibilityState?.disabled ? 0 : undefined)}
       style={{
         display: 'flex',
         flexDirection: 'column',
@@ -339,8 +368,8 @@ export const TextInput = forwardRef<TextInput, TextInputProps>(function TextInpu
         : keyboardType === 'decimal-pad'
           ? 'decimal'
           : 'text';
-  const sharedProps: any = {
-    'aria-label': accessibilityLabel,
+  const sharedProps = {
+    'aria-label': accessibilityLabel ?? placeholder,
     autoCapitalize,
     autoComplete,
     autoCorrect: autoCorrect ? 'on' : 'off',

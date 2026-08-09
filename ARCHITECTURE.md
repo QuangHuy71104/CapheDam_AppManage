@@ -72,11 +72,21 @@ Attendance and Payroll persistence are owned by feature repositories. The only
 local snapshot that remains is the attendance/payroll workspace used for
 offline edits and retry behavior.
 
-## Phase 3 hardening gate
+## Phase 3 hardening complete
 
-Optimistic concurrency uses explicit `version` metadata on attendance/payroll
-records. The database migration is staged separately from client compare-and-swap
-logic so schema rollout can be validated before the application depends on it.
+Optimistic concurrency uses explicit `version` metadata and compare-and-swap RPCs
+for attendance/payroll records. Database triggers enforce employee/manager write
+boundaries and create audit rows from canonical `OLD`/`NEW` values.
 
-`audit_logs` is append-only from application code through a controlled RPC;
-direct client inserts are not granted by RLS.
+`audit_logs` is written by database triggers; authenticated clients cannot call
+the legacy audit append RPC.
+
+## Current module boundary
+
+- App composition and temporary shared UI live in `src/app/`.
+- Staff and schedule implementations live in `src/features/staff` and
+  `src/features/schedule`; their `lib/` files are compatibility re-exports only.
+- Feature repositories own bounded, paginated Supabase reads. Realtime events
+  invalidate only the affected data domain.
+- `App.tsx` still contains several screen-level compositions; further extraction
+  should preserve the characterization tests and move one leaf screen at a time.

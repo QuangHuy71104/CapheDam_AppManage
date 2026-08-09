@@ -72,6 +72,21 @@ describe('payroll calculation', () => {
     expect(result.allowanceMoney).toBe(0);
     expect(result.totalMoney).toBe(0);
   });
+
+  it('uses the employee payroll snapshot instead of global defaults', () => {
+    const result = calculatePayroll(
+      sheet(
+        'custom-policy',
+        { '2026-08-03': { morning: '4', afternoon: '', opening: '' } },
+        { hourlyRate: 30000, allowance: 350000, breakfastAllowance: 40000 },
+      ),
+    );
+
+    expect(result.wageMoney).toBe(120000);
+    expect(result.breakfastMoney).toBe(40000);
+    expect(result.allowanceMoney).toBe(350000);
+    expect(result.totalMoney).toBe(510000);
+  });
 });
 
 describe('payroll approval status', () => {

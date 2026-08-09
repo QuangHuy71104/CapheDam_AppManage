@@ -17,6 +17,9 @@ export type AttendanceSheet = {
   employeeConfirmedAt?: string;
   managerApprovedAt?: string;
   managerApprovedBy?: string;
+  hourlyRate?: number;
+  allowance?: number;
+  breakfastAllowance?: number;
   version?: number;
   updatedAt?: string;
 };

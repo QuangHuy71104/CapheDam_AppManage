@@ -94,11 +94,18 @@ const buildDemoPeople = (): DemoPerson[] => {
   });
 };
 
-const listAllUsers = async (admin: any): Promise<User[]> => {
+type AdminUserLister = {
+  listUsers: (options: { page: number; perPage: number }) => Promise<{
+    data: { users: User[] };
+    error: unknown;
+  }>;
+};
+
+const listAllUsers = async (adminAuth: AdminUserLister): Promise<User[]> => {
   const users: User[] = [];
 
   for (let page = 1; page <= 20; page += 1) {
-    const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 100 });
+    const { data, error } = await adminAuth.listUsers({ page, perPage: 100 });
     if (error) {
       throw new Error('Không tải được danh sách tài khoản để chuẩn bị dữ liệu mẫu.');
     }
@@ -175,7 +182,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
 
   try {
     const people = buildDemoPeople();
-    const users = await listAllUsers(admin);
+    const users = await listAllUsers(admin.auth.admin);
     const usersByEmail = new Map(
       users
         .filter((user) => user.email)

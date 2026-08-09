@@ -18,10 +18,28 @@ const mapIngredientReport = (item: unknown): IngredientReport => {
   };
 };
 
-export const listIngredientReports = async (profile: UserProfile): Promise<IngredientReport[]> => {
+export type IngredientReportQuery = {
+  branchId?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export const listIngredientReports = async (
+  profile: UserProfile,
+  query: IngredientReportQuery = {},
+): Promise<IngredientReport[]> => {
+  const limit = Math.min(Math.max(query.limit ?? 200, 1), 500);
+  const offset = Math.max(query.offset ?? 0, 0);
   let request = supabase.from('ingredient_reports').select('*');
   if (profile.role !== 'owner' && profile.branchId) request = request.eq('branch_id', profile.branchId);
-  const { data, error } = await request.order('reported_at', { ascending: false });
+  if (profile.role === 'owner' && query.branchId) request = request.eq('branch_id', query.branchId);
+  if (query.from) request = request.gte('reported_at', query.from);
+  if (query.to) request = request.lt('reported_at', query.to);
+  const { data, error } = await request
+    .order('reported_at', { ascending: false })
+    .range(offset, offset + limit - 1);
   if (error) throw error;
   return (data ?? []).map(mapIngredientReport);
 };

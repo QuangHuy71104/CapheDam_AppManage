@@ -8,6 +8,19 @@ export type PayrollStatus =
   | 'manager_approved'
   | 'branch_submitted';
 
+export type PayrollPolicy = {
+  allowance: number;
+  breakfastAllowance: number;
+  hourlyRate: number;
+};
+
+const resolvePayrollPolicy = (sheet?: AttendanceSheet, override?: Partial<PayrollPolicy>): PayrollPolicy => ({
+  allowance: override?.allowance ?? sheet?.allowance ?? payrollPolicy.monthlyAllowance,
+  breakfastAllowance:
+    override?.breakfastAllowance ?? sheet?.breakfastAllowance ?? payrollPolicy.breakfastPerMorningShift,
+  hourlyRate: override?.hourlyRate ?? sheet?.hourlyRate ?? payrollPolicy.hourlyRate,
+});
+
 export const getPayrollStatus = (
   sheet: AttendanceSheet | undefined,
   branchConfirmation?: BranchPayrollConfirmation,
@@ -24,7 +37,8 @@ export const getPayrollStatus = (
   return 'draft';
 };
 
-export const calculatePayroll = (sheet?: AttendanceSheet) => {
+export const calculatePayroll = (sheet?: AttendanceSheet, policyOverride?: Partial<PayrollPolicy>) => {
+  const policy = resolvePayrollPolicy(sheet, policyOverride);
   const days = Object.values(sheet?.days ?? {});
   const openingHours = days.reduce((total, day) => total + toNumber(day.opening), 0);
   const morningHours = days.reduce((total, day) => total + toNumber(day.morning), 0) + openingHours;
@@ -33,9 +47,9 @@ export const calculatePayroll = (sheet?: AttendanceSheet) => {
   const afternoonShifts = days.filter((day) => toNumber(day.afternoon) > 0).length;
   const openingShifts = days.filter((day) => toNumber(day.opening) > 0).length;
   const totalHours = morningHours + afternoonHours;
-  const breakfastMoney = morningShifts * payrollPolicy.breakfastPerMorningShift;
-  const allowanceMoney = totalHours > 0 ? payrollPolicy.monthlyAllowance : 0;
-  const wageMoney = Math.round(totalHours * payrollPolicy.hourlyRate);
+  const breakfastMoney = morningShifts * policy.breakfastAllowance;
+  const allowanceMoney = totalHours > 0 ? policy.allowance : 0;
+  const wageMoney = Math.round(totalHours * policy.hourlyRate);
   const totalMoney = wageMoney + breakfastMoney + allowanceMoney;
   return {
     allowanceMoney,

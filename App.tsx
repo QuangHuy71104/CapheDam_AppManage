@@ -6,7 +6,6 @@ import {
   SafeAreaView,
   ScrollView,
   StatusBar,
-  StyleSheet,
   Text,
   TextInput,
   type KeyboardTypeOptions,
@@ -51,21 +50,32 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, type Ref, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import { webStorage } from './lib/storage';
 import { parseAttendanceGrid } from './lib/attendance-grid';
-import { StaffManagementScreen } from './StaffManagementScreen';
-import { WorkScheduleScreen, type PublishedWorkSchedule } from './lib/work-schedule';
+import type { PublishedWorkSchedule } from './src/features/schedule/core';
 import {
   getStaffDisplayName,
   loadStaffManagement,
   type ManagedStaffProfile,
   type StaffBranchAlias,
-} from './lib/staff-management';
+} from './src/features/staff/repository';
 
 import { colors } from './src/shared/ui/theme';
+import { styles } from './src/app/styles';
+import {
+  ClosingFormField,
+  FormField,
+  HistoryList,
+  HistoryRow,
+  isToday,
+  MetricTile,
+  PrimaryButton,
+  SectionTitle,
+  TransferSumField,
+} from './src/app/components';
 import {
   formatTransferExpression,
   isNumericText,
@@ -90,12 +100,9 @@ import { createSupplyState, supplyItems } from './src/features/inventory/catalog
 import { listIngredientReports, saveIngredientReport as persistIngredientReport } from './src/features/inventory/repository';
 import type {
   IngredientReport,
-  SupplyItemConfig,
-  SupplyItemInput,
-  SupplyItemKind,
-  SupplyItemStatus,
   SupplyReportItem,
 } from './src/features/inventory/model';
+import { IngredientScreen } from './src/features/inventory/IngredientScreen';
 import {
   createEmptyBalanceReport,
   createStockBalanceReport,
@@ -105,13 +112,10 @@ import {
 } from './src/features/closing/balance';
 import { listShiftCloseReports, saveShiftCloseReport as persistShiftCloseReport } from './src/features/closing/repository';
 import type {
-  BalanceInputSnapshot,
   BalanceReportBase,
   CupBalanceStatus,
   PlasticCupInput,
   PlasticCupKey,
-  PlasticCupReport,
-  StockBalanceReport,
   ShiftCloseReport,
 } from './src/features/closing/model';
 import type {
@@ -127,7 +131,7 @@ import {
   getBranchPayrollConfirmation,
   invalidateBranchPayroll,
 } from './src/features/payroll/domain';
-import { listBranchPayrollConfirmations } from './src/features/payroll/repository';
+import { autoConfirmDuePayrolls, listBranchPayrollConfirmations } from './src/features/payroll/repository';
 import { syncPayrollWorkspace } from './src/features/payroll/workspace-sync';
 import {
   initialPayrollWorkspace,
@@ -145,7 +149,13 @@ type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 };
-type AttendanceType = 'clockIn' | 'clockOut';
+const publicSignupEnabled = import.meta.env.VITE_ENABLE_PUBLIC_SIGNUP === 'true';
+const StaffManagementScreen = lazy(() =>
+  import('./src/features/staff/StaffManagementScreen').then((module) => ({ default: module.StaffManagementScreen })),
+);
+const WorkScheduleScreen = lazy(() =>
+  import('./src/features/schedule/WorkScheduleScreen').then((module) => ({ default: module.WorkScheduleScreen })),
+);
 
 
 
@@ -158,7 +168,8 @@ type PendingSignupDraft = {
   branchId: string | null;
 };
 
-const PAYROLL_WORKSPACE_STORAGE_KEY = 'caphedam-payroll-workspace-v2';
+const PAYROLL_WORKSPACE_STORAGE_PREFIX = 'caphedam-payroll-workspace-v3:';
+const getPayrollWorkspaceStorageKey = (userId: string) => `${PAYROLL_WORKSPACE_STORAGE_PREFIX}${userId}`;
 const PROFILE_OVERRIDE_PREFIX = 'caphedam-profile-override-';
 const logoImage = new URL('./assets/logo.jpg', import.meta.url).href;
 
@@ -352,7 +363,6 @@ const getWeekdayLabel = (monthKey: string, day: number) => {
 };
 
 const isCurrentMonth = (monthKey: string) => monthKey === getMonthKey();
-const isPastMonth = (monthKey: string) => monthKey < getMonthKey();
 const isFutureMonth = (monthKey: string) => monthKey > getMonthKey();
 
 const getMonthCutoffDate = (monthKey: string, dayOffsetFromEnd: number) => {
@@ -363,8 +373,6 @@ const getMonthCutoffDate = (monthKey: string, dayOffsetFromEnd: number) => {
 };
 
 const isManagerCancelLocked = (monthKey: string, now = new Date()) => now >= getMonthCutoffDate(monthKey, 0);
-
-const shouldAutoConfirmPayroll = (monthKey: string, now = new Date()) => now >= getMonthCutoffDate(monthKey, 1);
 
 const getBranchById = (branchId: string) => branches.find((branch) => branch.id === branchId) ?? branches[0];
 
@@ -377,6 +385,7 @@ const createEmptyAttendanceSheet = (
   employeeName: string,
   monthKey: string,
   userId?: string,
+  policy?: Pick<AttendanceSheet, 'allowance' | 'breakfastAllowance' | 'hourlyRate'>,
 ): AttendanceSheet => ({
   id: createId(),
   userId,
@@ -384,6 +393,7 @@ const createEmptyAttendanceSheet = (
   employeeName,
   monthKey,
   days: {},
+  ...policy,
 });
 
 const getAttendanceSheet = (
@@ -506,37 +516,6 @@ const applySelfProfileOverrides = async (profile: UserProfile, user: User) => {
   };
 };
 
-const normalizeAttendanceDays = (value: unknown): Record<string, AttendanceDayEntry> => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return {};
-  }
-
-  return Object.entries(value as Record<string, Partial<AttendanceDayEntry>>).reduce<Record<string, AttendanceDayEntry>>(
-    (days, [key, entry]) => {
-      const scheduled = entry.scheduled && typeof entry.scheduled === 'object' && !Array.isArray(entry.scheduled)
-        ? (Object.entries(entry.scheduled).reduce<Partial<Record<AttendanceInputField, string>>>((result, [field, hours]) => {
-            if (
-              (field === 'morning' || field === 'afternoon' || field === 'opening') &&
-              typeof hours === 'string' &&
-              !(field === 'afternoon' && isSundayAttendanceDayKey(key))
-            ) {
-              result[field] = hours;
-            }
-            return result;
-          }, {}))
-        : undefined;
-      days[key] = {
-        morning: typeof entry.morning === 'string' ? entry.morning : '',
-        afternoon: isSundayAttendanceDayKey(key) ? '' : typeof entry.afternoon === 'string' ? entry.afternoon : '',
-        opening: typeof entry.opening === 'string' ? entry.opening : '',
-        ...(scheduled && Object.keys(scheduled).length > 0 ? { scheduled } : {}),
-      };
-      return days;
-    },
-    {},
-  );
-};
-
 const mapProfileRow = (row: Record<string, unknown>, user: User): UserProfile => {
   const role = normalizeRole(row.role);
   const branchId = normalizeBranchId(role, row.branch_id);
@@ -633,11 +612,6 @@ const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | n
   return applySelfProfileOverrides(fallbackProfile, user);
 };
 
-const loadManagedProfiles = async () => {
-  const result = await callAccountApi<{ profiles: UserProfile[] }>('GET');
-  return result.profiles;
-};
-
 const saveOwnProfile = async ({
   avatarUrl,
   dateOfBirth,
@@ -655,25 +629,6 @@ const saveOwnProfile = async ({
     dateOfBirth,
     fullName: fullName.trim(),
     phone: phone.trim(),
-  });
-  return result.profile;
-};
-
-const saveManagedProfile = async (
-  id: string,
-  patch: Pick<UserProfile, 'allowance' | 'branchId' | 'breakfastAllowance' | 'employmentType' | 'hourlyRate' | 'role' | 'startDate'>,
-) => {
-  const branchId = patch.role === 'owner' ? null : patch.branchId || defaultBranchId;
-  const result = await callAccountApi<{ profile: UserProfile }>('PATCH', {
-    action: 'save-work',
-    allowance: patch.allowance,
-    branchId,
-    breakfastAllowance: patch.breakfastAllowance,
-    employmentType: patch.employmentType,
-    hourlyRate: patch.hourlyRate,
-    role: patch.role,
-    startDate: patch.startDate,
-    targetId: id,
   });
   return result.profile;
 };
@@ -741,11 +696,6 @@ const loadAppDataFromSupabase = async (profile: UserProfile): Promise<PayrollWor
   });
 };
 
-const syncTableLabels: Record<string, string> = {
-  attendance_sheets: 'bảng chấm công',
-  branch_payroll_confirmations: 'xác nhận bảng lương',
-};
-
 const getFriendlyErrorMessage = (error: unknown, fallback = 'Chưa thực hiện được. Vui lòng thử lại.') => {
   const rawMessage =
     error instanceof Error
@@ -773,6 +723,9 @@ const getFriendlyErrorMessage = (error: unknown, fallback = 'Chưa thực hiện
   if (message.includes('jwt') || message.includes('session') || message.includes('refresh token')) {
     return 'Phiên đăng nhập đã hết. Vui lòng đăng nhập lại.';
   }
+  if (message.includes('version_conflict') || message.includes('40001')) {
+    return 'Dữ liệu đã được thay đổi trên thiết bị khác. Vui lòng tải lại trước khi tiếp tục chỉnh sửa.';
+  }
   if (
     message.includes('schema') ||
     message.includes('column') ||
@@ -788,52 +741,11 @@ const getFriendlyErrorMessage = (error: unknown, fallback = 'Chưa thực hiện
   return fallback;
 };
 
-const autoConfirmEligiblePayrolls = (current: PayrollWorkspace, now = new Date()) => {
-  const nextConfirmations = [...current.branchPayrolls];
-  let changed = false;
-
-  branches.forEach((branch) => {
-    const monthKeys = Array.from(
-      new Set(
-        current.attendanceSheets
-          .filter((sheet) => sheet.branchId === branch.id && sheet.managerApprovedAt)
-          .map((sheet) => sheet.monthKey),
-      ),
-    );
-
-    monthKeys.forEach((monthKey) => {
-      const existingIndex = nextConfirmations.findIndex(
-        (confirmation) => confirmation.branchId === branch.id && confirmation.monthKey === monthKey,
-      );
-      const existing = existingIndex >= 0 ? nextConfirmations[existingIndex] : undefined;
-
-      if (existing?.managerConfirmedAt || existing?.managerCancelledAt || !shouldAutoConfirmPayroll(monthKey, now)) {
-        return;
-      }
-
-      const nextConfirmation: BranchPayrollConfirmation = {
-        id: existing?.id ?? createId(),
-        branchId: branch.id,
-        monthKey,
-        managerConfirmedAt: now.toISOString(),
-        managerName: 'Hệ thống',
-        autoConfirmed: true,
-      };
-
-      if (existingIndex >= 0) {
-        nextConfirmations[existingIndex] = nextConfirmation;
-      } else {
-        nextConfirmations.push(nextConfirmation);
-      }
-      changed = true;
-    });
-  });
-
-  return changed ? { ...current, branchPayrolls: nextConfirmations } : current;
-};
-
 type ScheduledEmployeeHours = {
+  allowance: number;
+  breakfastAllowance: number;
   employeeName: string;
+  hourlyRate: number;
   days: Map<string, Partial<Record<AttendanceInputField, string>>>;
 };
 
@@ -866,7 +778,13 @@ const applyPublishedScheduleToAttendance = (current: PayrollWorkspace, schedule:
 
     let employee = scheduledByEmployeeId.get(assignment.employeeId);
     if (!employee) {
-      employee = { employeeName: assignment.employeeName.trim(), days: new Map() };
+      employee = {
+        allowance: assignment.allowance,
+        breakfastAllowance: assignment.breakfastAllowance,
+        employeeName: assignment.employeeName.trim(),
+        hourlyRate: assignment.hourlyRate,
+        days: new Map(),
+      };
       scheduledByEmployeeId.set(assignment.employeeId, employee);
       scheduledByName.set(normalizedName, employee);
     }
@@ -894,7 +812,13 @@ const applyPublishedScheduleToAttendance = (current: PayrollWorkspace, schedule:
           (sheet.userId === userId || (!sheet.userId && sheet.employeeName.trim().toLocaleLowerCase('vi-VN') === employee.employeeName.toLocaleLowerCase('vi-VN'))),
       );
       if (!exists) {
-        nextSheets.push(createEmptyAttendanceSheet(schedule.branchId, employee.employeeName, monthKey, userId));
+        nextSheets.push(
+          createEmptyAttendanceSheet(schedule.branchId, employee.employeeName, monthKey, userId, {
+            allowance: employee.allowance,
+            breakfastAllowance: employee.breakfastAllowance,
+            hourlyRate: employee.hourlyRate,
+          }),
+        );
       }
     });
   });
@@ -1325,7 +1249,6 @@ const exportClosingReportSvg = async (report: ShiftCloseReport) => {
 
 const numericKeyboard: KeyboardTypeOptions = 'number-pad';
 const decimalKeyboard: KeyboardTypeOptions = 'decimal-pad';
-const transferKeyboard: KeyboardTypeOptions = 'default';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('attendance');
@@ -1340,6 +1263,8 @@ export default function App() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [authFeedback, setAuthFeedback] = useState<AuthFeedback | null>(null);
   const [remoteReady, setRemoteReady] = useState(false);
+  const [dataLoadError, setDataLoadError] = useState<string | null>(null);
+  const [dataLoadRetryToken, setDataLoadRetryToken] = useState(0);
   const [syncingRemote, setSyncingRemote] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncRetryToken, setSyncRetryToken] = useState(0);
@@ -1351,7 +1276,7 @@ export default function App() {
   const remoteSnapshotRef = useRef('');
   const latestDataRef = useRef<PayrollWorkspace>(initialPayrollWorkspace);
   const latestProfileRef = useRef<UserProfile | null>(null);
-  const remoteRefreshInFlightRef = useRef<Promise<[PayrollWorkspace, IngredientReport[], ShiftCloseReport[]]> | null>(null);
+  const remoteRefreshInFlightRef = useRef<Promise<void> | null>(null);
   const syncQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingSignupRef = useRef<PendingSignupDraft | null>(null);
 
@@ -1359,6 +1284,7 @@ export default function App() {
 
   const [supplyRows, setSupplyRows] = useState(createSupplyState);
   const [ingredientNote, setIngredientNote] = useState('');
+  const [savingIngredientReport, setSavingIngredientReport] = useState(false);
 
   const [plasticCupRows, setPlasticCupRows] = useState(createPlasticCupState);
   const [cornMilkRow, setCornMilkRow] = useState(createBalanceInputState);
@@ -1375,7 +1301,9 @@ export default function App() {
   const [cardTopupMoney, setCardTopupMoney] = useState('');
   const [closingNote, setClosingNote] = useState('');
   const [closingErrors, setClosingErrors] = useState<string[]>([]);
+  const [savingClosingReport, setSavingClosingReport] = useState(false);
   const [pendingClosingExport, setPendingClosingExport] = useState<ShiftCloseReport | null>(null);
+  const [scheduleDirty, setScheduleDirty] = useState(false);
 
   const clearClosingErrors = (...keys: string[]) => {
     if (keys.length === 0) {
@@ -1424,25 +1352,23 @@ export default function App() {
   // A manager can stay signed in while an employee submits their payroll from
   // another device. Keep the visible snapshot fresh without replacing edits
   // that have not been sent to Supabase yet.
-  const refreshRemoteData = useCallback(async () => {
+  const refreshRemoteData = useCallback(async (scope: 'all' | 'payroll' | 'ingredients' | 'closing' = 'all') => {
     if (!profile || !remoteReady || remoteRefreshInFlightRef.current) {
       return;
     }
 
+    const refreshesPayroll = scope === 'all' || scope === 'payroll';
     const localSnapshot = JSON.stringify(latestDataRef.current);
-    if (localSnapshot !== remoteSnapshotRef.current) {
+    if (refreshesPayroll && localSnapshot !== remoteSnapshotRef.current) {
       return;
     }
 
-    const request = Promise.all([
-      loadAppDataFromSupabase(profile),
-      listIngredientReports(profile),
-      listShiftCloseReports(profile),
-    ]);
-    remoteRefreshInFlightRef.current = request;
-
-    try {
-      const [remoteData, remoteIngredients, remoteClosings] = await request;
+    const request = (async () => {
+      const [remoteData, remoteIngredients, remoteClosings] = await Promise.all([
+        refreshesPayroll ? loadAppDataFromSupabase(profile) : Promise.resolve(null),
+        scope === 'all' || scope === 'ingredients' ? listIngredientReports(profile) : Promise.resolve(null),
+        scope === 'all' || scope === 'closing' ? listShiftCloseReports(profile) : Promise.resolve(null),
+      ]);
 
       const activeProfile = latestProfileRef.current;
       if (
@@ -1453,18 +1379,24 @@ export default function App() {
         return;
       }
 
-      // A user may have started editing while the request was in flight.
-      // In that case the normal save flow owns the next snapshot.
-      if (JSON.stringify(latestDataRef.current) !== localSnapshot) {
-        return;
+      if (remoteData) {
+        // A user may have started editing while the request was in flight.
+        // In that case the normal save flow owns the next snapshot.
+        if (JSON.stringify(latestDataRef.current) !== localSnapshot) {
+          return;
+        }
+        remoteSnapshotRef.current = JSON.stringify(remoteData);
+        latestDataRef.current = remoteData;
+        setData(remoteData);
       }
-
-      remoteSnapshotRef.current = JSON.stringify(remoteData);
-      latestDataRef.current = remoteData;
-      setData(remoteData);
-      setIngredientReports(remoteIngredients);
-      setClosingReports(remoteClosings);
+      if (remoteIngredients) setIngredientReports(remoteIngredients);
+      if (remoteClosings) setClosingReports(remoteClosings);
       setSyncError(null);
+    })();
+    remoteRefreshInFlightRef.current = request;
+
+    try {
+      await request;
     } catch {
       // This is a background refresh. Saving data has its own retry/error UI,
       // so a transient refresh failure should not be shown as a failed save.
@@ -1492,21 +1424,38 @@ export default function App() {
   }, [profile]);
 
   useEffect(() => {
+    if (!authLoaded) {
+      return;
+    }
+
+    const userId = session?.user?.id;
+    if (!userId) {
+      setData(initialPayrollWorkspace);
+      setLoaded(true);
+      return;
+    }
+
+    let cancelled = false;
     const loadData = async () => {
+      setLoaded(false);
+      setData(initialPayrollWorkspace);
       try {
-        const rawData = await webStorage.getItem(PAYROLL_WORKSPACE_STORAGE_KEY);
-        if (rawData) {
+        const rawData = await webStorage.getItem(getPayrollWorkspaceStorageKey(userId));
+        if (rawData && !cancelled) {
           setData(normalizePayrollWorkspace(JSON.parse(rawData) as Partial<PayrollWorkspace>));
         }
       } catch {
         Alert.alert('Không đọc được dữ liệu', 'App sẽ tiếp tục với dữ liệu trống trên máy này.');
       } finally {
-        setLoaded(true);
+        if (!cancelled) setLoaded(true);
       }
     };
 
-    loadData();
-  }, []);
+    void loadData();
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoaded, session?.user?.id]);
 
   useEffect(() => {
     if (!isSupabaseConfigured) {
@@ -1545,7 +1494,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !authLoaded) {
+    if (!isSupabaseConfigured || !authLoaded || !loaded) {
       return;
     }
 
@@ -1556,6 +1505,7 @@ export default function App() {
       if (!user) {
         setProfile(null);
         setRemoteReady(false);
+        setDataLoadError(null);
         setData(initialPayrollWorkspace);
         setIngredientReports([]);
         setClosingReports([]);
@@ -1565,8 +1515,20 @@ export default function App() {
 
       try {
         setRemoteReady(false);
+        setDataLoadError(null);
         const nextProfile = await fetchUserProfile(user, pendingSignupRef.current);
-        const [remoteData, remoteIngredients, remoteClosings] = await Promise.all([
+        if (cancelled) {
+          return;
+        }
+
+        setProfile(nextProfile);
+        setCurrentRole(nextProfile.role);
+        setEmployeeName(nextProfile.fullName);
+        if (nextProfile.branchId) {
+          setSelectedBranchId(nextProfile.branchId);
+        }
+
+        const [payrollResult, ingredientsResult, closingsResult] = await Promise.allSettled([
           loadAppDataFromSupabase(nextProfile),
           listIngredientReports(nextProfile),
           listShiftCloseReports(nextProfile),
@@ -1576,33 +1538,35 @@ export default function App() {
           return;
         }
 
-        setProfile(nextProfile);
-        setCurrentRole(nextProfile.role);
-        setEmployeeName(nextProfile.fullName);
-
-        if (nextProfile.branchId) {
-          setSelectedBranchId(nextProfile.branchId);
+        if (payrollResult.status === 'rejected') {
+          throw payrollResult.reason;
         }
 
+        const remoteData = payrollResult.value;
         remoteSnapshotRef.current = JSON.stringify(remoteData);
         setData(remoteData);
-        setIngredientReports(remoteIngredients);
-        setClosingReports(remoteClosings);
+        if (ingredientsResult.status === 'fulfilled') {
+          setIngredientReports(ingredientsResult.value);
+        }
+        if (closingsResult.status === 'fulfilled') {
+          setClosingReports(closingsResult.value);
+        }
+        if (ingredientsResult.status === 'rejected' || closingsResult.status === 'rejected') {
+          setAuthFeedback({
+            tone: 'info',
+            title: 'Một số báo cáo chưa tải được',
+            message: 'Bảng công vẫn sẵn sàng. Ứng dụng sẽ tự tải lại báo đồ và báo ca khi kết nối ổn định.',
+          });
+        }
         setRemoteReady(true);
+        setDataLoadError(null);
         pendingSignupRef.current = null;
       } catch (error) {
         if (!cancelled) {
           const message = getFriendlyErrorMessage(error, 'Không tải được dữ liệu. Vui lòng thử lại.');
-          setAuthFeedback({
-            tone: 'error',
-            title: 'Không vào được ứng dụng',
-            message,
-          });
+          setDataLoadError(message);
           pendingSignupRef.current = null;
-          setProfile(null);
-          setRemoteReady(true);
-          setSession(null);
-          void supabase.auth.signOut();
+          setRemoteReady(false);
         }
       }
     };
@@ -1612,17 +1576,18 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [authLoaded, session?.user?.id]);
+  }, [authLoaded, dataLoadRetryToken, loaded, session?.user]);
 
   useEffect(() => {
-    if (!loaded) {
+    const userId = session?.user?.id;
+    if (!loaded || !userId) {
       return;
     }
 
-    webStorage.setItem(PAYROLL_WORKSPACE_STORAGE_KEY, JSON.stringify(data)).catch(() => {
+    webStorage.setItem(getPayrollWorkspaceStorageKey(userId), JSON.stringify(data)).catch(() => {
       Alert.alert('Không lưu được dữ liệu', 'Vui lòng kiểm tra dung lượng thiết bị.');
     });
-  }, [data, loaded]);
+  }, [data, loaded, session?.user?.id]);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !profile || !remoteReady) {
@@ -1683,10 +1648,13 @@ export default function App() {
             } catch {
               // A first local change can happen before a snapshot is available.
             }
-            await syncPayrollWorkspace(currentData, activeProfile, remoteSnapshot);
+            const syncedData = await syncPayrollWorkspace(currentData, activeProfile, remoteSnapshot);
 
             if (!cancelled && JSON.stringify(latestDataRef.current) === currentSnapshot) {
-              remoteSnapshotRef.current = currentSnapshot;
+              const syncedSnapshot = JSON.stringify(syncedData);
+              remoteSnapshotRef.current = syncedSnapshot;
+              latestDataRef.current = syncedData;
+              setData(syncedData);
               setSyncError(null);
               void refreshRemoteData();
             }
@@ -1759,7 +1727,7 @@ export default function App() {
         table: 'attendance_sheets',
         ...(attendanceFilter ? { filter: attendanceFilter } : {}),
       },
-      requestRefresh,
+      () => void refreshRemoteData('payroll'),
     );
 
     if (profile.role !== 'employee') {
@@ -1771,7 +1739,7 @@ export default function App() {
           table: 'branch_payroll_confirmations',
           ...(payrollFilter ? { filter: payrollFilter } : {}),
         },
-        requestRefresh,
+        () => void refreshRemoteData('payroll'),
       );
     }
     channel = channel.on(
@@ -1782,7 +1750,7 @@ export default function App() {
         table: 'ingredient_reports',
         ...(ingredientFilter ? { filter: ingredientFilter } : {}),
       },
-      requestRefresh,
+      () => void refreshRemoteData('ingredients'),
     );
     channel = channel.on(
       'postgres_changes',
@@ -1792,7 +1760,7 @@ export default function App() {
         table: 'shift_close_reports',
         ...(closingFilter ? { filter: closingFilter } : {}),
       },
-      requestRefresh,
+      () => void refreshRemoteData('closing'),
     );
 
     channel.subscribe();
@@ -1803,7 +1771,7 @@ export default function App() {
       if (!document.hidden) {
         requestRefresh();
       }
-    }, 15_000);
+    }, 60_000);
     const refreshWhenVisible = () => {
       if (!document.hidden) {
         requestRefresh();
@@ -1836,12 +1804,26 @@ export default function App() {
   }, [activeTab, currentRole, selectedBranchId]);
 
   useEffect(() => {
-    if (!loaded || currentRole === 'employee') {
+    if (!loaded || !profile || !remoteReady || currentRole === 'employee') {
       return;
     }
 
-    setData((current) => autoConfirmEligiblePayrolls(current));
-  }, [currentRole, data.attendanceSheets, loaded]);
+    let cancelled = false;
+    void autoConfirmDuePayrolls()
+      .then((confirmed) => {
+        if (!cancelled && confirmed.length > 0) {
+          void refreshRemoteData();
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setSyncError(getFriendlyErrorMessage(error, 'Chưa kiểm tra được trạng thái tự chốt lương.'));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentRole, loaded, profile, refreshRemoteData, remoteReady]);
 
   const tabItems = getTabItemsForRole(currentRole);
   const activeBranch = getBranchById(selectedBranchId);
@@ -1862,9 +1844,6 @@ export default function App() {
   );
   const selectedBranchClosings = closingReports.filter((report) => getReportBranchId(report) === selectedBranchId);
   const selectedBranchIngredientsThisMonth = selectedBranchIngredients.filter((report) =>
-    isReportInMonth(report.timestamp, selectedMonthKey),
-  );
-  const selectedBranchClosingsThisMonth = selectedBranchClosings.filter((report) =>
     isReportInMonth(report.timestamp, selectedMonthKey),
   );
   const confirmedOwnerBranches = branches.filter((branch) =>
@@ -2233,6 +2212,10 @@ export default function App() {
   };
 
   const saveIngredientReport = async () => {
+    if (savingIngredientReport) {
+      return;
+    }
+
     const report: IngredientReport = {
       id: createId(),
       branchId: selectedBranchId,
@@ -2247,21 +2230,32 @@ export default function App() {
       })),
     };
 
+    setSavingIngredientReport(true);
     try {
       await persistIngredientReport(report);
+      setIngredientReports((current) => [report, ...current.filter((item) => item.id !== report.id)].slice(0, 80));
+      setSupplyRows(createSupplyState());
+      setIngredientNote('');
     } catch (error) {
       const message = getFriendlyErrorMessage(error, 'Chưa lưu được báo đồ. Vui lòng thử lại.');
       Alert.alert('Chưa lưu được báo đồ', message);
       return;
+    } finally {
+      setSavingIngredientReport(false);
     }
 
-    setIngredientReports((current) => [report, ...current.filter((item) => item.id !== report.id)].slice(0, 80));
-    setSupplyRows(createSupplyState());
-    setIngredientNote('');
-    await shareText(buildSupplyShareText(activeBranch, report));
+    try {
+      await shareText(buildSupplyShareText(activeBranch, report));
+    } catch {
+      // Cancelling the native share sheet does not invalidate the saved report.
+    }
   };
 
   const saveShiftClose = async () => {
+    if (savingClosingReport) {
+      return;
+    }
+
     setClosingErrors([]);
 
     const bankTransferExpression = trimTransferExpression(bankTransferMoney);
@@ -2335,12 +2329,15 @@ export default function App() {
       cashierName: signedEmployeeName || undefined,
     };
 
+    setSavingClosingReport(true);
     try {
       await persistShiftCloseReport(report);
     } catch (error) {
       const message = getFriendlyErrorMessage(error, 'Chưa lưu được báo ca. Vui lòng thử lại.');
       Alert.alert('Chưa lưu được báo ca', message);
       return;
+    } finally {
+      setSavingClosingReport(false);
     }
 
     setClosingReports((current) => [report, ...current.filter((item) => item.id !== report.id)].slice(0, 40));
@@ -2430,6 +2427,19 @@ export default function App() {
 
   if (!isSupabaseConfigured) {
     return <SupabaseSetupScreen />;
+  }
+
+  if (session && dataLoadError && !remoteReady) {
+    return (
+      <DataLoadErrorScreen
+        message={dataLoadError}
+        onRetry={() => {
+          setDataLoadError(null);
+          setDataLoadRetryToken((value) => value + 1);
+        }}
+        onSignOut={() => void supabase.auth.signOut()}
+      />
+    );
   }
 
   if (!loaded || !authLoaded || (session && (!profile || !remoteReady))) {
@@ -2552,6 +2562,7 @@ export default function App() {
 
             {activeTab === 'ingredients' && (
               <IngredientScreen
+                saving={savingIngredientReport}
                 note={ingredientNote}
                 onNoteChange={setIngredientNote}
                 onSave={saveIngredientReport}
@@ -2607,6 +2618,7 @@ export default function App() {
                 onWaterBottlesChange={setNumericClosingValue(setWaterBottles, 'waterBottles')}
                 plasticCupRows={plasticCupRows}
                 records={selectedBranchClosings}
+                saving={savingClosingReport}
                 shopeeMoney={shopeeMoney}
                 smallBottles={smallBottles}
                 smallCoffeePacks={smallCoffeePacks}
@@ -2637,21 +2649,30 @@ export default function App() {
             )}
 
             {activeTab === 'staffManagement' && (currentRole === 'owner' || currentRole === 'manager') ? (
-              <StaffManagementScreen
-                branches={branches}
-                currentProfile={profile}
-                onCurrentProfileChange={(nextProfile) => {
-                  setProfile(nextProfile);
-                  setCurrentRole(nextProfile.role);
-                  if (nextProfile.branchId) {
-                    setSelectedBranchId(nextProfile.branchId);
-                  }
-                }}
-              />
+              <Suspense fallback={<Text style={styles.emptyText}>Đang tải quản lý nhân sự...</Text>}>
+                <StaffManagementScreen
+                  branches={branches}
+                  currentProfile={profile}
+                  onCurrentProfileChange={(nextProfile) => {
+                    setProfile(nextProfile);
+                    setCurrentRole(nextProfile.role);
+                    if (nextProfile.branchId) {
+                      setSelectedBranchId(nextProfile.branchId);
+                    }
+                  }}
+                />
+              </Suspense>
             ) : null}
 
             {activeTab === 'schedule' && currentRole === 'manager' ? (
-              <WorkScheduleScreen branch={activeBranch} managerId={profile.id} onPublish={publishSchedule} />
+              <Suspense fallback={<Text style={styles.emptyText}>Đang tải lịch làm việc...</Text>}>
+                <WorkScheduleScreen
+                  branch={activeBranch}
+                  managerId={profile.id}
+                  onDirtyChange={setScheduleDirty}
+                  onPublish={publishSchedule}
+                />
+              </Suspense>
             ) : null}
               </>
             ) : page.key === 'managerPayrollEmployee' && currentRole === 'manager' ? (
@@ -2672,7 +2693,22 @@ export default function App() {
           </ScrollView>
 
           {page.key === 'main' ? (
-          <View accessibilityRole="tablist" style={styles.tabs}>
+          <View
+            accessibilityLabel="Điều hướng chính"
+            accessibilityRole="tablist"
+            onKeyDown={(event) => {
+              if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+              const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]'));
+              const currentIndex = tabs.findIndex((tab) => tab === document.activeElement);
+              if (currentIndex < 0 || tabs.length === 0) return;
+              event.preventDefault();
+              const direction = event.key === 'ArrowRight' ? 1 : -1;
+              const nextTab = tabs[(currentIndex + direction + tabs.length) % tabs.length];
+              nextTab.focus();
+              nextTab.click();
+            }}
+            style={styles.tabs}
+          >
             {tabItems.map((item) => {
               const Icon = item.icon;
               const selected = activeTab === item.key;
@@ -2683,7 +2719,18 @@ export default function App() {
                   accessibilityRole="tab"
                   accessibilityState={{ selected }}
                   key={item.key}
-                  onPress={() => setActiveTab(item.key)}
+                  onPress={() => {
+                    if (
+                      activeTab === 'schedule' &&
+                      item.key !== 'schedule' &&
+                      scheduleDirty &&
+                      !window.confirm('Lịch làm có thay đổi chưa lưu. Bạn có chắc muốn rời màn hình này?')
+                    ) {
+                      return;
+                    }
+                    setScheduleDirty(false);
+                    setActiveTab(item.key);
+                  }}
                   style={({ pressed }) => [
                     styles.tab,
                     selected && styles.tabActive,
@@ -2770,6 +2817,30 @@ function SupabaseSetupScreen() {
   );
 }
 
+function DataLoadErrorScreen({
+  message,
+  onRetry,
+  onSignOut,
+}: {
+  message: string;
+  onRetry: () => void;
+  onSignOut: () => void;
+}) {
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <View style={[styles.shell, styles.centerScreen]}>
+        <View style={styles.authCard}>
+          <CircleAlert color={colors.rose} size={28} />
+          <Text style={styles.authTitle}>Chưa tải được dữ liệu</Text>
+          <Text style={styles.authHint}>{message}</Text>
+          <PrimaryButton icon={RefreshCcw} label="Thử lại" onPress={onRetry} tone="primary" />
+          <PrimaryButton icon={X} label="Đăng xuất" onPress={onSignOut} tone="danger" />
+        </View>
+      </View>
+    </SafeAreaView>
+  );
+}
+
 function AuthScreen({
   feedback,
   onAuthFeedbackChange,
@@ -2791,6 +2862,9 @@ function AuthScreen({
   const passwordInputRef = useRef<TextInput>(null);
 
   const handleModeChange = (nextMode: 'signIn' | 'signUp') => {
+    if (nextMode === 'signUp' && !publicSignupEnabled) {
+      return;
+    }
     setMode(nextMode);
     setPassword('');
     setShowPassword(false);
@@ -2813,6 +2887,16 @@ function AuthScreen({
 
   const submit = async () => {
     if (loading) {
+      return;
+    }
+
+    if (mode === 'signUp' && !publicSignupEnabled) {
+      handleModeChange('signIn');
+      onAuthFeedbackChange({
+        tone: 'info',
+        title: 'Đăng ký đã được khóa',
+        message: 'Tài khoản nhân sự do quản lý cấp. Vui lòng liên hệ quản lý cửa hàng.',
+      });
       return;
     }
 
@@ -3088,18 +3172,22 @@ function AuthScreen({
                 </Text>
               )}
 
-              <View style={styles.authSwitchRow}>
-                <Text style={styles.authSwitchPrompt}>
-                  {isSignIn ? 'Chưa có tài khoản?' : 'Đã có tài khoản?'}
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => handleModeChange(isSignIn ? 'signUp' : 'signIn')}
-                  style={({ pressed }) => [styles.authSwitchButton, pressed && styles.pressed]}
-                >
-                  <Text style={styles.authSwitchButtonText}>{isSignIn ? 'Tạo tài khoản' : 'Quay lại đăng nhập'}</Text>
-                </Pressable>
-              </View>
+              {publicSignupEnabled || !isSignIn ? (
+                <View style={styles.authSwitchRow}>
+                  <Text style={styles.authSwitchPrompt}>
+                    {isSignIn ? 'Chưa có tài khoản?' : 'Đã có tài khoản?'}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => handleModeChange(isSignIn ? 'signUp' : 'signIn')}
+                    style={({ pressed }) => [styles.authSwitchButton, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.authSwitchButtonText}>{isSignIn ? 'Tạo tài khoản' : 'Quay lại đăng nhập'}</Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <Text style={styles.authSignupNote}>Tài khoản nhân sự do quản lý cửa hàng cấp.</Text>
+              )}
             </View>
 
             <Text style={styles.authFooter}>Chỉ dành cho nhân sự được cấp quyền</Text>
@@ -3588,7 +3676,7 @@ function AccountPanel({
   };
 
   return (
-    <View accessibilityRole="dialog" style={styles.accountOverlay}>
+    <View accessibilityLabel="Quản lý tài khoản" accessibilityRole="dialog" style={styles.accountOverlay}>
       <Pressable
         accessibilityLabel="Đóng quản lý tài khoản"
         accessibilityRole="button"
@@ -3748,210 +3836,6 @@ function AccountPanel({
             <AccountSecuritySection authEmail={authEmail} onSignOut={onSignOut} />
           </View>
         </ScrollView>
-      </View>
-    </View>
-  );
-}
-
-function OwnerStaffManager({
-  currentProfile,
-  onCurrentProfileChange,
-}: {
-  currentProfile: UserProfile;
-  onCurrentProfileChange: (profile: UserProfile) => void;
-}) {
-  const [profiles, setProfiles] = useState<UserProfile[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [role, setRole] = useState<UserRole>('employee');
-  const [branchId, setBranchId] = useState(defaultBranchId);
-  const [employmentType, setEmploymentType] = useState<EmploymentType>('part_time');
-  const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<AuthFeedback | null>(null);
-  const selectedProfile = profiles.find((item) => item.id === selectedId);
-
-  useEffect(() => {
-    let cancelled = false;
-    loadManagedProfiles()
-      .then((nextProfiles) => {
-        if (!cancelled) {
-          setProfiles(nextProfiles);
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setFeedback({
-            tone: 'error',
-            title: 'Không tải được danh sách nhân sự',
-            message: getFriendlyErrorMessage(error, 'Vui lòng kiểm tra mạng rồi thử lại.'),
-          });
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const selectProfile = (nextProfile: UserProfile) => {
-    setSelectedId((current) => (current === nextProfile.id ? null : nextProfile.id));
-    setRole(nextProfile.role);
-    setBranchId(nextProfile.branchId ?? defaultBranchId);
-    setEmploymentType(nextProfile.employmentType);
-    setStartDate(nextProfile.startDate);
-    setFeedback(null);
-  };
-
-  const saveWorkProfile = async () => {
-    if (!selectedProfile || saving) {
-      return;
-    }
-
-    setSaving(true);
-    setFeedback({ tone: 'info', title: 'Đang cập nhật nhân viên', message: 'Đang lưu thông tin làm việc...' });
-    try {
-      const nextProfile = await saveManagedProfile(selectedProfile.id, {
-        allowance: selectedProfile.allowance,
-        branchId: role === 'owner' ? null : branchId,
-        breakfastAllowance: selectedProfile.breakfastAllowance,
-        employmentType,
-        hourlyRate: selectedProfile.hourlyRate,
-        role,
-        startDate,
-      });
-      setProfiles((current) => current.map((item) => (item.id === nextProfile.id ? nextProfile : item)));
-      if (nextProfile.id === currentProfile.id) {
-        onCurrentProfileChange(nextProfile);
-      }
-      setFeedback({ tone: 'success', title: 'Đã cập nhật', message: `Đã lưu thông tin làm việc của ${nextProfile.fullName || nextProfile.email}.` });
-    } catch (error) {
-      setFeedback({
-        tone: 'error',
-        title: 'Không cập nhật được',
-        message: getFriendlyErrorMessage(error, 'Chưa lưu được thông tin nhân viên. Vui lòng thử lại.'),
-      });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <View style={styles.accountSectionCard}>
-      <View style={styles.accountSectionHeading}>
-        <UsersRound color={colors.primary} size={21} />
-        <View style={styles.flex}>
-          <Text style={styles.accountSectionTitle}>Quản lý nhân sự</Text>
-          <Text style={styles.accountSectionHint}>Chọn một nhân viên để đổi vị trí và thông tin làm việc.</Text>
-        </View>
-      </View>
-
-      {feedback ? <AuthFeedbackBanner feedback={feedback} onDismiss={() => setFeedback(null)} /> : null}
-      {loading ? <Text style={styles.accountLoadingText}>Đang tải danh sách nhân sự...</Text> : null}
-
-      <View style={styles.staffList}>
-        {profiles.map((staffProfile) => {
-          const staffRole = roleOptions.find((option) => option.key === staffProfile.role)?.label ?? 'Nhân viên';
-          const selected = selectedId === staffProfile.id;
-          const staffBranch = staffProfile.role === 'owner'
-            ? 'Toàn hệ thống'
-            : getBranchById(staffProfile.branchId ?? defaultBranchId).name;
-
-          return (
-            <View key={staffProfile.id} style={[styles.staffCard, selected && styles.staffCardActive]}>
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => selectProfile(staffProfile)}
-                style={({ pressed }) => [styles.staffCardButton, pressed && styles.pressed]}
-              >
-                <ProfileAvatar avatarUrl={staffProfile.avatarUrl} label={staffProfile.fullName || staffProfile.email} />
-                <View style={styles.staffCardCopy}>
-                  <Text style={styles.staffCardName}>{staffProfile.fullName || staffProfile.email}</Text>
-                  <Text style={styles.staffCardMeta}>{staffRole} • {staffBranch}</Text>
-                  <Text style={styles.staffCardPhone}>{staffProfile.phone || 'Chưa có số điện thoại'}</Text>
-                </View>
-                <ChevronRight
-                  color={colors.muted}
-                  size={18}
-                  style={{ transform: selected ? 'rotate(90deg)' : 'none' }}
-                />
-              </Pressable>
-
-              {selected ? (
-                <View style={styles.staffEditor}>
-                  <View style={styles.nativeField}>
-                    <Text style={styles.inputLabel}>Vị trí</Text>
-                    <select
-                      className="account-native-field"
-                      disabled={staffProfile.id === currentProfile.id}
-                      onChange={(event) => {
-                        const nextRole = event.target.value as UserRole;
-                        setRole(nextRole);
-                        if (nextRole !== 'owner' && !branchId) {
-                          setBranchId(defaultBranchId);
-                        }
-                      }}
-                      value={role}
-                    >
-                      {roleOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
-                    </select>
-                    {staffProfile.id === currentProfile.id ? (
-                      <Text style={styles.nativeFieldHint}>Không thể tự hạ quyền Chủ cửa hàng.</Text>
-                    ) : null}
-                  </View>
-
-                  <View style={styles.nativeField}>
-                    <Text style={styles.inputLabel}>Nơi làm việc</Text>
-                    <select
-                      className="account-native-field"
-                      disabled={role === 'owner'}
-                      onChange={(event) => setBranchId(event.target.value)}
-                      value={role === 'owner' ? '' : branchId}
-                    >
-                      {role === 'owner' ? <option value="">Toàn hệ thống</option> : null}
-                      {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
-                    </select>
-                  </View>
-
-                  <View style={styles.nativeField}>
-                    <Text style={styles.inputLabel}>Hình thức làm việc</Text>
-                    <select
-                      className="account-native-field"
-                      onChange={(event) => setEmploymentType(event.target.value as EmploymentType)}
-                      value={employmentType}
-                    >
-                      <option value="full_time">Full time</option>
-                      <option value="part_time">Part time</option>
-                    </select>
-                  </View>
-
-                  <View style={styles.nativeField}>
-                    <Text style={styles.inputLabel}>Ngày bắt đầu làm việc</Text>
-                    <input
-                      className="account-native-field"
-                      max={new Date().toISOString().slice(0, 10)}
-                      onChange={(event) => setStartDate(event.target.value)}
-                      type="date"
-                      value={startDate}
-                    />
-                    <Text style={styles.nativeFieldHint}>Thâm niên hiện tại: {formatSeniority(startDate)}</Text>
-                  </View>
-
-                  <PrimaryButton
-                    icon={Save}
-                    label={saving ? 'Đang lưu...' : 'Lưu thông tin làm việc'}
-                    onPress={() => void saveWorkProfile()}
-                    tone="primary"
-                  />
-                </View>
-              ) : null}
-            </View>
-          );
-        })}
       </View>
     </View>
   );
@@ -4328,7 +4212,7 @@ function MonthYearPicker({
   }, [onClose]);
 
   return (
-    <View accessibilityRole="dialog" style={styles.monthPickerOverlay}>
+    <View accessibilityLabel="Chọn tháng" accessibilityRole="dialog" style={styles.monthPickerOverlay}>
       <Pressable
         accessibilityLabel="Đóng bộ chọn tháng"
         accessibilityRole="button"
@@ -4493,335 +4377,6 @@ function EmployeeAttendanceScreen({
         />
       )}
     </View>
-  );
-}
-
-function ManagerAttendanceScreen({
-  branch,
-  branchPayroll,
-  confirmedSheets,
-  employeeName,
-  monthKey,
-  onCancelBranchPayroll,
-  onCancelEmployeePayroll,
-  onConfirmBranchPayroll,
-  onConfirmEmployeePayroll,
-  onFillColumn,
-  onMonthChange,
-  onNameChange,
-  onPasteGrid,
-  onUpdateCell,
-  pendingSheets,
-  sheet,
-}: {
-  branch: Branch;
-  branchPayroll?: BranchPayrollConfirmation;
-  confirmedSheets: AttendanceSheet[];
-  employeeName: string;
-  monthKey: string;
-  onCancelBranchPayroll: () => void;
-  onCancelEmployeePayroll: (employeeName: string) => void;
-  onConfirmBranchPayroll: () => void;
-  onConfirmEmployeePayroll: (employeeName: string) => void;
-  onFillColumn: (employeeName: string, field: keyof AttendanceDayEntry, value: string) => void;
-  onMonthChange: (value: string) => void;
-  onNameChange: (value: string) => void;
-  onPasteGrid: (employeeName: string, startDay: number, startField: keyof AttendanceDayEntry, pastedText: string) => void;
-  onUpdateCell: (employeeName: string, dayKey: string, field: keyof AttendanceDayEntry, value: string) => void;
-  pendingSheets: AttendanceSheet[];
-  sheet?: AttendanceSheet;
-}) {
-  const editable = isCurrentMonth(monthKey) && !sheet?.employeeConfirmedAt;
-  const branchPayrollTotal = calculateBranchPayroll(confirmedSheets);
-  const locked = isManagerCancelLocked(monthKey);
-
-  return (
-    <View style={styles.screen}>
-      <SectionTitle icon={UsersRound} title="Chấm công quản lí" subtitle={branch.name} />
-      <MonthNavigator monthKey={monthKey} onChange={onMonthChange} />
-      <FormField
-        icon={UserCog}
-        label="Tên quản lí"
-        onChangeText={onNameChange}
-        placeholder={`Quản lí ${branch.area}`}
-        value={employeeName.startsWith('Quản lí ') ? '' : employeeName}
-      />
-      <AttendanceNotice editable={editable} monthKey={monthKey} sheet={sheet} />
-      <AttendanceSheetTable
-        editable={editable}
-        employeeName={employeeName}
-        monthKey={monthKey}
-        onFillColumn={onFillColumn}
-        onPasteGrid={onPasteGrid}
-        onUpdateCell={onUpdateCell}
-        sheet={sheet}
-      />
-      <PayrollSummary payroll={calculatePayroll(sheet)} />
-      {sheet?.employeeConfirmedAt ? (
-        isCurrentMonth(monthKey) ? (
-          <PrimaryButton
-            icon={XCircle}
-            label="Mở lại bảng công quản lí"
-            onPress={() => onCancelEmployeePayroll(employeeName)}
-            tone="danger"
-          />
-        ) : null
-      ) : (
-        <PrimaryButton
-          icon={CheckCheck}
-          label="Xác nhận lương quản lí"
-          onPress={() => onConfirmEmployeePayroll(employeeName)}
-          tone="primary"
-        />
-      )}
-
-      <View style={styles.managerPanel}>
-        <SectionTitle icon={ClipboardCheck} title="Bảng công chờ duyệt" subtitle="Nhân viên đã gửi bảng công cho quản lí" />
-        <PayrollAggregateSummary aggregate={branchPayrollTotal} />
-
-        <HistoryList emptyText="Chưa có nhân viên gửi bảng công." icon={History} title="Nhân viên chờ quản lí duyệt">
-          {confirmedSheets.map((confirmedSheet) => {
-            const payroll = calculatePayroll(confirmedSheet);
-
-            return (
-              <HistoryRow
-                key={confirmedSheet.id}
-                meta={`Nhân viên gửi lúc: ${formatDateTime(confirmedSheet.employeeConfirmedAt ?? confirmedSheet.id)}`}
-                title={confirmedSheet.employeeName}
-                value={`${formatNumber(payroll.totalHours)} giờ - ${formatCurrency(payroll.totalMoney)}`}
-              />
-            );
-          })}
-        </HistoryList>
-
-        {pendingSheets.length > 0 ? (
-          <Text style={styles.pendingText}>
-            {pendingSheets.length} bảng công chưa được gửi vì nhân viên chưa bấm gửi quản lí duyệt.
-          </Text>
-        ) : null}
-
-        {branchPayroll?.managerConfirmedAt ? (
-          <>
-            <StatusPanel
-              icon={branchPayroll.autoConfirmed ? CalendarCheck2 : CheckCircle2}
-              title={branchPayroll.autoConfirmed ? 'Hệ thống đã tự xác nhận' : 'Đã gửi chủ cửa hàng'}
-              text={`${branchPayroll.managerName ?? 'Quản lí'} xác nhận lúc ${formatDateTime(branchPayroll.managerConfirmedAt)}.`}
-              tone="success"
-            />
-            <PrimaryButton
-              icon={XCircle}
-              label={locked ? 'Đã khóa hủy xác nhận' : 'Hủy xác nhận để chỉnh sửa'}
-              onPress={onCancelBranchPayroll}
-              tone="danger"
-            />
-          </>
-        ) : (
-          <PrimaryButton
-            icon={ShieldCheck}
-            label="Duyệt bảng lương và gửi chủ cửa hàng"
-            onPress={onConfirmBranchPayroll}
-            tone="primary"
-          />
-        )}
-      </View>
-    </View>
-  );
-}
-
-function AttendanceNotice({
-  editable,
-  monthKey,
-  sheet,
-}: {
-  editable: boolean;
-  monthKey: string;
-  sheet?: AttendanceSheet;
-}) {
-  if (isFutureMonth(monthKey)) {
-    return (
-      <StatusPanel
-        icon={CalendarDays}
-        title="Tháng này chưa bắt đầu"
-        text="Bạn có thể xem trước lịch nhưng chỉ được chấm công khi tháng này bắt đầu."
-        tone="neutral"
-      />
-    );
-  }
-
-  if (isPastMonth(monthKey)) {
-    return (
-      <StatusPanel
-        icon={History}
-        title="Chế độ xem lại"
-        text="Đây là dữ liệu của tháng đã qua. Bảng công được khóa để bảo toàn lịch sử."
-        tone="neutral"
-      />
-    );
-  }
-
-  if (sheet?.managerApprovedAt) {
-    return (
-      <StatusPanel
-        icon={CheckCircle2}
-        title="Bảng lương đã được quản lí duyệt"
-        text="Quản lí đã khóa bảng công này. Liên hệ quản lí nếu cần điều chỉnh giờ làm."
-        tone="success"
-      />
-    );
-  }
-
-  if (sheet?.employeeConfirmedAt) {
-    return (
-      <StatusPanel
-        icon={CheckCircle2}
-        title="Bảng lương đã khóa ở nhân viên"
-        text="Sau khi xác nhận, dữ liệu được gửi lên màn hình tổng hợp của quản lí chi nhánh."
-        tone="success"
-      />
-    );
-  }
-
-  return null;
-}
-
-function AttendanceSheetTable({
-  editable,
-  employeeName,
-  monthKey,
-  onFillColumn,
-  onPasteGrid,
-  onUpdateCell,
-  sheet,
-}: {
-  editable: boolean;
-  employeeName: string;
-  monthKey: string;
-  onFillColumn: (employeeName: string, field: keyof AttendanceDayEntry, value: string) => void;
-  onPasteGrid: (employeeName: string, startDay: number, startField: keyof AttendanceDayEntry, pastedText: string) => void;
-  onUpdateCell: (employeeName: string, dayKey: string, field: keyof AttendanceDayEntry, value: string) => void;
-  sheet?: AttendanceSheet;
-}) {
-  const days = Array.from({ length: getDaysInMonth(monthKey) }, (_, index) => index + 1);
-  const [fillMorning, setFillMorning] = useState('');
-  const [fillAfternoon, setFillAfternoon] = useState('');
-  const canFill = editable && Boolean(employeeName.trim());
-  const canFillMorning = canFill && isNumericText(sanitizeShiftHours(fillMorning));
-  const canFillAfternoon = canFill && isNumericText(sanitizeShiftHours(fillAfternoon));
-
-  const handlePaste = (
-    event: React.ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>,
-    day: number,
-    field: keyof AttendanceDayEntry,
-  ) => {
-    const pastedText = event.clipboardData.getData('text/plain');
-    if (!pastedText.includes('\t') && !pastedText.includes('\n')) {
-      return;
-    }
-    event.preventDefault();
-    onPasteGrid(employeeName, day, field, pastedText);
-  };
-
-  return (
-    <>
-      <View style={styles.attendanceQuickCard}>
-        <View style={styles.attendanceQuickHeading}>
-          <Text style={styles.attendanceQuickTitle}>Điền nhanh như bảng tính</Text>
-          <Text style={styles.attendanceQuickHint}>
-            Dán vùng Sáng/Chiều từ Google Sheets vào bất kỳ ô nào để điền theo hàng và cột.
-          </Text>
-        </View>
-        <View style={styles.attendanceQuickFields}>
-          <View style={styles.attendanceQuickField}>
-            <Text style={styles.attendanceQuickLabel}>Ca sáng</Text>
-            <TextInput
-              editable={canFill}
-              keyboardType={decimalKeyboard}
-              onChangeText={setFillMorning}
-              placeholder="Ví dụ 4"
-              placeholderTextColor="#9A806B"
-              style={styles.attendanceQuickInput}
-              value={fillMorning}
-            />
-            <Pressable
-              accessibilityRole="button"
-              disabled={!canFillMorning}
-              onPress={() => onFillColumn(employeeName, 'morning', fillMorning)}
-              style={({ pressed }) => [
-                styles.attendanceQuickButton,
-                !canFillMorning && styles.attendanceQuickButtonDisabled,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Text style={styles.attendanceQuickButtonText}>Điền tất cả</Text>
-            </Pressable>
-          </View>
-          <View style={styles.attendanceQuickField}>
-            <Text style={styles.attendanceQuickLabel}>Ca chiều</Text>
-            <TextInput
-              editable={canFill}
-              keyboardType={decimalKeyboard}
-              onChangeText={setFillAfternoon}
-              placeholder="Ví dụ 4"
-              placeholderTextColor="#9A806B"
-              style={styles.attendanceQuickInput}
-              value={fillAfternoon}
-            />
-            <Pressable
-              accessibilityRole="button"
-              disabled={!canFillAfternoon}
-              onPress={() => onFillColumn(employeeName, 'afternoon', fillAfternoon)}
-              style={({ pressed }) => [
-                styles.attendanceQuickButton,
-                !canFillAfternoon && styles.attendanceQuickButtonDisabled,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Text style={styles.attendanceQuickButtonText}>Điền tất cả</Text>
-            </Pressable>
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.attendanceTable}>
-      <View style={[styles.attendanceRow, styles.attendanceHeaderRow]}>
-        <Text style={[styles.attendanceCell, styles.attendanceDateCell]}>Ngày</Text>
-        <Text style={[styles.attendanceCell, styles.attendanceWeekdayCell]}>Thứ</Text>
-        <Text style={styles.attendanceCell}>Ca sáng</Text>
-        <Text style={styles.attendanceCell}>Ca chiều</Text>
-      </View>
-      {days.map((day) => {
-        const dayKey = getAttendanceDayKey(monthKey, day);
-        const value = sheet?.days[dayKey] ?? { morning: '', afternoon: '' };
-
-        return (
-          <View key={dayKey} style={styles.attendanceRow}>
-            <Text style={[styles.attendanceCell, styles.attendanceDateCell]}>{String(day).padStart(2, '0')}</Text>
-            <Text style={[styles.attendanceCell, styles.attendanceWeekdayCell]}>{getWeekdayLabel(monthKey, day)}</Text>
-            <TextInput
-              editable={editable}
-              keyboardType={decimalKeyboard}
-              onChangeText={(inputValue) => onUpdateCell(employeeName, dayKey, 'morning', inputValue)}
-              onPaste={(event) => handlePaste(event, day, 'morning')}
-              placeholder="0"
-              placeholderTextColor="#9A806B"
-              style={[styles.attendanceInput, !editable && styles.attendanceInputReadonly]}
-              value={value.morning}
-            />
-            <TextInput
-              editable={editable}
-              keyboardType={decimalKeyboard}
-              onChangeText={(inputValue) => onUpdateCell(employeeName, dayKey, 'afternoon', inputValue)}
-              onPaste={(event) => handlePaste(event, day, 'afternoon')}
-              placeholder="0"
-              placeholderTextColor="#9A806B"
-              style={[styles.attendanceInput, !editable && styles.attendanceInputReadonly]}
-              value={value.afternoon}
-            />
-          </View>
-        );
-      })}
-      </View>
-    </>
   );
 }
 
@@ -5517,147 +5072,6 @@ const buildSupplyShareText = (branch: Branch, report: IngredientReport) => {
   return `Dạ em báo đồ ${branch.name} ạ:\n${body}`;
 };
 
-function IngredientScreen({
-  note,
-  onNoteChange,
-  onRowChange,
-  onSave,
-  records,
-  rows,
-}: {
-  note: string;
-  onNoteChange: (value: string) => void;
-  onRowChange: (key: string, patch: Partial<SupplyItemInput>) => void;
-  onSave: () => void | Promise<void>;
-  records: IngredientReport[];
-  rows: Record<string, SupplyItemInput>;
-}) {
-  const quantityItems = supplyItems.filter((item) => item.kind === 'quantity');
-  const statusItems = supplyItems.filter((item) => item.kind === 'status');
-
-  return (
-    <View style={styles.screen}>
-      <SectionTitle icon={PackageCheck} title="Báo đồ" subtitle="Số lượng và tình trạng còn/hết" />
-
-      <View style={styles.supplySection}>
-        <Text style={styles.supplySectionTitle}>Có số lượng</Text>
-        <View style={styles.supplyGrid}>
-          {quantityItems.map((item) => (
-            <SupplyItemRow
-              item={item}
-              key={item.key}
-              onChange={(patch) => onRowChange(item.key, patch)}
-              value={rows[item.key] ?? { quantity: '', status: 'available' }}
-            />
-          ))}
-        </View>
-      </View>
-
-      <View style={styles.supplySection}>
-        <Text style={styles.supplySectionTitle}>Chỉ trạng thái</Text>
-        <View style={styles.supplyGrid}>
-          {statusItems.map((item) => (
-            <SupplyItemRow
-              item={item}
-              key={item.key}
-              onChange={(patch) => onRowChange(item.key, patch)}
-              value={rows[item.key] ?? { quantity: '', status: 'available' }}
-            />
-          ))}
-        </View>
-      </View>
-
-      <FormField
-        label="Ghi chú"
-        multiline
-        onChangeText={onNoteChange}
-        placeholder="Ví dụ: hàng sắp hết, nguyên liệu lỗi, cần nhập thêm..."
-        value={note}
-      />
-
-      <PrimaryButton icon={Save} label="Gửi báo đồ" onPress={onSave} tone="primary" />
-
-      <HistoryList
-        emptyText="Chưa có báo đồ."
-        icon={ClipboardList}
-        title="Báo đồ gần đây"
-      >
-        {records.slice(0, 8).map((report) => (
-          <HistoryRow
-            key={report.id}
-            meta={formatDateTime(report.timestamp)}
-            title={report.items?.length ? 'Báo đồ' : report.itemName ?? 'Báo đồ'}
-            value={formatSupplyReportSummary(report)}
-          />
-        ))}
-      </HistoryList>
-    </View>
-  );
-}
-
-function SupplyItemRow({
-  item,
-  onChange,
-  value,
-}: {
-  item: SupplyItemConfig;
-  onChange: (patch: Partial<SupplyItemInput>) => void;
-  value: SupplyItemInput;
-}) {
-  const isEmpty = value.status === 'empty';
-
-  return (
-    <View style={styles.supplyItemRow}>
-      <View style={styles.supplyItemHeader}>
-        <View style={styles.flex}>
-          <Text style={styles.supplyItemName}>{item.label}</Text>
-          {item.unit ? <Text style={styles.supplyItemUnit}>Đơn vị: {item.unit}</Text> : null}
-        </View>
-
-        <SupplyStatusSwitch status={value.status} onChange={(status) => onChange({ status })} />
-      </View>
-
-      {item.kind === 'quantity' ? (
-        <View style={styles.supplyQuantityRow}>
-          <TextInput
-            keyboardType={numericKeyboard}
-            onChangeText={(inputValue) => onChange({ quantity: sanitizeDigits(inputValue) })}
-            placeholder="0"
-            placeholderTextColor="#9A806B"
-            style={styles.supplyQuantityInput}
-            value={value.quantity}
-          />
-          <Text style={styles.supplyQuantityUnit}>{item.unit}</Text>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-function SupplyStatusSwitch({
-  onChange,
-  status,
-}: {
-  onChange: (status: SupplyItemStatus) => void;
-  status: SupplyItemStatus;
-}) {
-  const isEmpty = status === 'empty';
-
-  return (
-    <Pressable
-      accessibilityRole="button"
-      onPress={() => onChange(isEmpty ? 'available' : 'empty')}
-      style={({ pressed }) => [
-        styles.supplyStatusToggle,
-        isEmpty ? styles.supplyStatusToggleEmpty : styles.supplyStatusToggleAvailable,
-        pressed && styles.pressed,
-      ]}
-    >
-      <Text style={styles.supplyStatusToggleText}>{isEmpty ? 'Hết' : 'Còn'}</Text>
-    </Pressable>
-  );
-}
-
 function ClosingScreen({
   bankTransferMoney,
   bankTransferTotal,
@@ -5687,6 +5101,7 @@ function ClosingScreen({
   onWaterBottlesChange,
   plasticCupRows,
   records,
+  saving,
   shopeeMoney,
   smallBottles,
   smallCoffeePacks,
@@ -5721,6 +5136,7 @@ function ClosingScreen({
   onWaterBottlesChange: (value: string) => void;
   plasticCupRows: Record<PlasticCupKey, PlasticCupInput>;
   records: ShiftCloseReport[];
+  saving: boolean;
   shopeeMoney: string;
   smallBottles: string;
   smallCoffeePacks: string;
@@ -5791,7 +5207,7 @@ function ClosingScreen({
         </View>
       </View>
 
-      <PrimaryButton icon={Save} label="Gửi báo ca" onPress={onSave} tone="primary" />
+      <PrimaryButton disabled={saving} icon={Save} label={saving ? 'Đang gửi...' : 'Gửi báo ca'} onPress={onSave} tone="primary" />
 
       <HistoryList emptyText="Chưa có bản báo ca." icon={History} title="Báo ca gần đây">
         {records.slice(0, 8).map((report) => {
@@ -6031,2988 +5447,3 @@ function CupEquationInput({
     />
   );
 }
-
-function MetricTile({
-  icon: Icon,
-  label,
-  tone,
-  value,
-}: {
-  icon: typeof Clock3;
-  label: string;
-  tone: 'teal' | 'amber' | 'blue';
-  value: string;
-}) {
-  const toneStyle = {
-    teal: { backgroundColor: colors.primarySoft, borderColor: colors.lineStrong, color: colors.primary },
-    amber: { backgroundColor: colors.amberSoft, borderColor: '#E2B889', color: colors.amber },
-    blue: { backgroundColor: colors.blueSoft, borderColor: '#B8C7AE', color: colors.blue },
-  }[tone];
-
-  return (
-    <View style={[styles.metricTile, { borderColor: toneStyle.borderColor }]}>
-      <View style={[styles.metricAccent, { backgroundColor: toneStyle.color }]} />
-      <View style={[styles.metricIcon, { backgroundColor: toneStyle.backgroundColor }]}>
-        <Icon color={toneStyle.color} size={18} />
-      </View>
-      <Text style={styles.metricValue}>{value}</Text>
-      <Text style={styles.metricLabel}>{label}</Text>
-    </View>
-  );
-}
-
-function SectionTitle({
-  icon: Icon,
-  subtitle,
-  title,
-}: {
-  icon: typeof Clock3;
-  subtitle?: string;
-  title: string;
-}) {
-  return (
-    <View style={styles.sectionHeader}>
-      <View style={styles.sectionIcon}>
-        <Icon color={colors.primary} size={21} />
-      </View>
-      <View style={styles.sectionCopy}>
-        <Text style={styles.sectionTitle}>{title}</Text>
-        {subtitle ? <Text style={styles.sectionSubtitle}>{subtitle}</Text> : null}
-      </View>
-    </View>
-  );
-}
-
-function FormField({
-  icon: Icon,
-  autoComplete,
-  autoCapitalize,
-  autoCorrect,
-  keyboardType,
-  label,
-  multiline,
-  onChangeText,
-  placeholder,
-  secureTextEntry,
-  textContentType,
-  trailingAction,
-  value,
-}: {
-  icon?: typeof Clock3;
-  autoComplete?: TextInputProps['autoComplete'];
-  autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
-  autoCorrect?: boolean;
-  keyboardType?: KeyboardTypeOptions;
-  label: string;
-  multiline?: boolean;
-  onChangeText: (value: string) => void;
-  placeholder: string;
-  secureTextEntry?: boolean;
-  textContentType?: TextInputProps['textContentType'];
-  trailingAction?: {
-    icon: typeof Clock3;
-    label: string;
-    onPress: () => void;
-  };
-  value: string;
-}) {
-  const TrailingIcon = trailingAction?.icon;
-
-  return (
-    <View style={styles.field}>
-      <Text style={styles.inputLabel}>{label}</Text>
-      <View style={[styles.inputShell, multiline && styles.inputShellMultiline]}>
-        {Icon ? <Icon color={colors.muted} size={18} /> : null}
-        <TextInput
-          autoComplete={autoComplete}
-          autoCapitalize={autoCapitalize}
-          autoCorrect={autoCorrect}
-          keyboardType={keyboardType}
-          multiline={multiline}
-          onChangeText={onChangeText}
-          placeholder={placeholder}
-          placeholderTextColor="#9A806B"
-          secureTextEntry={secureTextEntry}
-          style={[styles.input, multiline && styles.inputMultiline]}
-          textContentType={textContentType}
-          value={value}
-        />
-        {TrailingIcon && trailingAction ? (
-          <Pressable
-            accessibilityLabel={trailingAction.label}
-            accessibilityRole="button"
-            onPress={trailingAction.onPress}
-            style={({ pressed }) => [styles.inputTrailingButton, pressed && styles.pressed]}
-          >
-            <TrailingIcon color={colors.muted} size={18} />
-          </Pressable>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
-function ClosingFormField({
-  error,
-  label,
-  numeric = true,
-  onChangeText,
-  required,
-  suffix,
-  value,
-}: {
-  error?: boolean;
-  label: string;
-  numeric?: boolean;
-  onChangeText: (value: string) => void;
-  required?: boolean;
-  suffix?: string;
-  value: string;
-}) {
-  return (
-    <View style={[styles.closingCard, error && styles.closingCardError]}>
-      <Text style={styles.closingLabel}>
-        {label}
-        {required ? <Text style={styles.requiredMark}> *</Text> : null}
-      </Text>
-      <TextInput
-        keyboardType={numeric ? numericKeyboard : 'default'}
-        multiline
-        onChangeText={(inputValue) => onChangeText(numeric ? sanitizeDigits(inputValue) : inputValue)}
-        placeholderTextColor="#9A806B"
-        style={[styles.closingInput, error && styles.closingInputError]}
-        textAlignVertical="top"
-        value={value}
-      />
-      {suffix ? <Text style={styles.inputSuffix}>{suffix}</Text> : null}
-    </View>
-  );
-}
-
-function TransferSumField({
-  label,
-  onChangeText,
-  total,
-  value,
-}: {
-  label: string;
-  onChangeText: (value: string) => void;
-  total: number;
-  value: string;
-}) {
-  return (
-    <View style={styles.closingCard}>
-      <Text style={styles.closingLabel}>{label}</Text>
-      <TextInput
-        keyboardType={transferKeyboard}
-        onChangeText={onChangeText}
-        placeholderTextColor="#9A806B"
-        style={styles.closingInput}
-        value={value}
-      />
-      <Text style={styles.transferTotal}>Tổng: {formatNumber(total)}</Text>
-    </View>
-  );
-}
-
-function PrimaryButton({
-  icon: Icon,
-  label,
-  onPress,
-  tone,
-}: {
-  icon: typeof Clock3;
-  label: string;
-  onPress: () => void;
-  tone: 'primary' | 'danger';
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.primaryButton,
-        tone === 'danger' && styles.dangerButton,
-        pressed && styles.pressed,
-      ]}
-    >
-      <Icon color={colors.onDark} size={19} />
-      <Text style={styles.primaryButtonText}>{label}</Text>
-    </Pressable>
-  );
-}
-
-function ChipGroup({
-  compact,
-  items,
-  onSelect,
-  selected,
-}: {
-  compact?: boolean;
-  items: string[];
-  onSelect: (value: string) => void;
-  selected: string;
-}) {
-  return (
-    <View style={[styles.chipGroup, compact && styles.chipGroupCompact]}>
-      {items.map((item) => {
-        const active = selected === item;
-
-        return (
-          <Pressable
-            accessibilityRole="button"
-            key={item}
-            onPress={() => onSelect(item)}
-            style={({ pressed }) => [
-              styles.chip,
-              compact && styles.chipCompact,
-              active && styles.chipActive,
-              pressed && styles.pressed,
-            ]}
-          >
-            <Text style={[styles.chipText, active && styles.chipTextActive]}>{item}</Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
-function HistoryList({
-  children,
-  emptyText,
-  icon: Icon,
-  title,
-}: {
-  children: React.ReactNode;
-  emptyText: string;
-  icon: typeof Clock3;
-  title: string;
-}) {
-  const hasChildren = Array.isArray(children) ? children.length > 0 : Boolean(children);
-
-  return (
-    <View style={styles.history}>
-      <View style={styles.historyHeader}>
-        <Icon color={colors.ink} size={18} />
-        <Text style={styles.historyTitle}>{title}</Text>
-      </View>
-      {hasChildren ? children : <Text style={styles.emptyText}>{emptyText}</Text>}
-    </View>
-  );
-}
-
-function HistoryRow({
-  meta,
-  onPress,
-  title,
-  value,
-}: {
-  meta?: string;
-  onPress?: () => void;
-  title: string;
-  value: string;
-}) {
-  const content = (
-    <>
-      <View style={styles.flex}>
-        <Text style={styles.historyRowTitle}>{title}</Text>
-        {meta ? <Text style={styles.historyRowMeta}>{meta}</Text> : null}
-        <Text style={styles.historyRowValue}>{value}</Text>
-      </View>
-      <ChevronRight color={colors.muted} size={18} />
-    </>
-  );
-
-  if (onPress) {
-    return (
-      <Pressable
-        accessibilityRole="button"
-        onPress={onPress}
-        style={({ pressed }) => [styles.historyRow, pressed && styles.pressed]}
-      >
-        {content}
-      </Pressable>
-    );
-  }
-
-  return (
-    <View style={styles.historyRow}>
-      {content}
-    </View>
-  );
-}
-
-function isToday(value: string) {
-  const inputDate = new Date(value);
-  const today = new Date();
-
-  return (
-    inputDate.getFullYear() === today.getFullYear() &&
-    inputDate.getMonth() === today.getMonth() &&
-    inputDate.getDate() === today.getDate()
-  );
-}
-
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: colors.canvasDeep,
-  },
-  authSafeArea: {
-    backgroundColor: '#2D160F',
-  },
-  keyboardView: {
-    flex: 1,
-  },
-  shell: {
-    alignSelf: 'center',
-    flex: 1,
-    backgroundColor: colors.background,
-    maxWidth: 760,
-    minWidth: 0,
-    overflow: 'hidden',
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.09,
-    shadowRadius: 28,
-    width: '100%',
-  },
-  header: {
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 252, 247, 0.94)',
-    borderColor: colors.line,
-    borderRadius: 18,
-    borderWidth: 1,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-    minHeight: 64,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.1,
-    shadowRadius: 20,
-    elevation: 3,
-  },
-  brandLockup: {
-    alignItems: 'center',
-    flex: 1,
-    flexDirection: 'row',
-    gap: 10,
-    minWidth: 0,
-  },
-  brandMark: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.lineStrong,
-    borderRadius: 13,
-    borderWidth: 1,
-    height: 46,
-    justifyContent: 'center',
-    overflow: 'hidden',
-    padding: 3,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 14,
-    width: 46,
-  },
-  brandLogo: {
-    borderRadius: 10,
-    height: '100%',
-    resizeMode: 'cover',
-    width: '100%',
-  },
-  brandCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  brandScript: {
-    color: colors.accent,
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 0,
-    lineHeight: 13,
-  },
-  appName: {
-    color: colors.gold,
-    fontSize: 21,
-    fontWeight: '900',
-    letterSpacing: 0,
-    lineHeight: 23,
-    textShadowColor: colors.primary,
-    textShadowOffset: { width: 1, height: 1 },
-    textShadowRadius: 0,
-  },
-  appSubtitle: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0,
-    marginTop: 3,
-  },
-  iconButton: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceSoft,
-    borderColor: colors.lineStrong,
-    borderRadius: 999,
-    borderWidth: 1,
-    height: 44,
-    justifyContent: 'center',
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    width: 44,
-  },
-  headerActions: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    flexShrink: 0,
-    gap: 7,
-  },
-  accountAvatarButton: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderColor: colors.primary,
-    borderRadius: 999,
-    borderWidth: 2,
-    height: 46,
-    justifyContent: 'center',
-    padding: 2,
-    width: 46,
-  },
-  profileAvatar: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 999,
-    borderWidth: 1,
-    height: 38,
-    overflow: 'hidden',
-    width: 38,
-  },
-  profileAvatarLarge: {
-    borderColor: 'rgba(255, 248, 238, 0.52)',
-    borderWidth: 3,
-    height: 92,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.24,
-    shadowRadius: 18,
-    width: 92,
-  },
-  profileAvatarImage: {
-    height: '100%',
-    resizeMode: 'cover',
-    width: '100%',
-  },
-  accountPresenceDot: {
-    backgroundColor: '#78A85B',
-    borderColor: colors.surfaceStrong,
-    borderRadius: 999,
-    borderWidth: 2,
-    bottom: -1,
-    height: 12,
-    position: 'absolute',
-    right: -1,
-    width: 12,
-  },
-  accountPresenceDotSyncing: {
-    backgroundColor: colors.gold,
-  },
-  accountPresenceDotError: {
-    backgroundColor: colors.rose,
-  },
-  pressed: {
-    opacity: 0.72,
-  },
-  centerScreen: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  loadingLogo: {
-    borderRadius: 8,
-    height: 72,
-    marginBottom: 14,
-    width: 72,
-  },
-  loadingTitle: {
-    color: colors.ink,
-    fontSize: 24,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  loadingText: {
-    color: colors.muted,
-    fontSize: 14,
-    fontWeight: '700',
-    letterSpacing: 0,
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  authContent: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    paddingBottom: 28,
-  },
-  authScrollContent: {
-    flexGrow: 1,
-    backgroundColor: '#2D160F',
-  },
-  authViewport: {
-    flexGrow: 1,
-    backgroundColor: '#2D160F',
-    width: '100%',
-  },
-  authViewportWide: {
-    alignSelf: 'center',
-    shadowColor: '#160A06',
-    shadowOffset: { width: 0, height: 18 },
-    shadowOpacity: 0.34,
-    shadowRadius: 36,
-    width: 480,
-  },
-  authHero: {
-    backgroundColor: '#4B281B',
-    minHeight: 312,
-    overflow: 'hidden',
-    paddingBottom: 64,
-    paddingHorizontal: 20,
-    paddingTop: 18,
-  },
-  authHeroOrbLarge: {
-    backgroundColor: 'rgba(231, 182, 64, 0.12)',
-    borderColor: 'rgba(255, 248, 238, 0.09)',
-    borderRadius: 140,
-    borderWidth: 1,
-    height: 280,
-    position: 'absolute',
-    right: 0,
-    top: -118,
-    width: 280,
-  },
-  authHeroOrbSmall: {
-    backgroundColor: 'rgba(185, 120, 73, 0.22)',
-    borderRadius: 72,
-    bottom: 24,
-    height: 144,
-    position: 'absolute',
-    right: 10,
-    width: 144,
-  },
-  authBrandRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 12,
-  },
-  authHeroLogoFrame: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: 'rgba(255, 248, 238, 0.42)',
-    borderRadius: 17,
-    borderWidth: 1,
-    height: 58,
-    overflow: 'hidden',
-    padding: 3,
-    shadowColor: '#180B07',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.24,
-    shadowRadius: 16,
-    width: 58,
-  },
-  authHeroLogo: {
-    borderRadius: 14,
-    height: '100%',
-    resizeMode: 'cover',
-    width: '100%',
-  },
-  authHeroBrandName: {
-    color: colors.onDark,
-    fontSize: 15,
-    fontWeight: '900',
-    letterSpacing: 1.4,
-    lineHeight: 19,
-  },
-  authHeroBrandMeta: {
-    color: 'rgba(255, 248, 238, 0.68)',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.1,
-    marginTop: 2,
-  },
-  authHeroCopy: {
-    marginTop: 38,
-    maxWidth: 340,
-  },
-  authSystemPill: {
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(255, 248, 238, 0.1)',
-    borderColor: 'rgba(255, 248, 238, 0.14)',
-    borderRadius: 999,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 7,
-    minHeight: 30,
-    paddingHorizontal: 11,
-  },
-  authSystemDot: {
-    backgroundColor: '#A9D18E',
-    borderRadius: 999,
-    height: 7,
-    shadowColor: '#A9D18E',
-    shadowOpacity: 0.7,
-    shadowRadius: 5,
-    width: 7,
-  },
-  authSystemText: {
-    color: colors.onDark,
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.2,
-  },
-  authHeroTitle: {
-    color: colors.onDark,
-    fontSize: 34,
-    fontWeight: '900',
-    letterSpacing: -0.8,
-    lineHeight: 39,
-    marginTop: 14,
-  },
-  authHeroSubtitle: {
-    color: 'rgba(255, 248, 238, 0.72)',
-    fontSize: 14,
-    fontWeight: '600',
-    letterSpacing: 0,
-    lineHeight: 21,
-    marginTop: 10,
-    maxWidth: 330,
-  },
-  authSheet: {
-    backgroundColor: colors.surfaceStrong,
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    gap: 18,
-    marginTop: -32,
-    minHeight: 500,
-    paddingBottom: 22,
-    paddingHorizontal: 20,
-    paddingTop: 10,
-  },
-  authSheetHandle: {
-    alignSelf: 'center',
-    backgroundColor: colors.lineStrong,
-    borderRadius: 999,
-    height: 4,
-    marginBottom: 2,
-    width: 42,
-  },
-  authSheetHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 12,
-  },
-  authSheetEyebrow: {
-    color: colors.accent,
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 1.1,
-  },
-  authSheetTitle: {
-    color: colors.ink,
-    fontSize: 25,
-    fontWeight: '900',
-    letterSpacing: -0.4,
-    lineHeight: 30,
-    marginTop: 2,
-  },
-  authSheetHint: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '600',
-    lineHeight: 18,
-    marginTop: 2,
-  },
-  authSheetIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderRadius: 15,
-    height: 48,
-    justifyContent: 'center',
-    width: 48,
-  },
-  authFields: {
-    gap: 15,
-  },
-  authField: {
-    gap: 7,
-  },
-  authFieldLabel: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
-  authFieldLabelFocused: {
-    color: colors.primary,
-  },
-  authFieldShell: {
-    alignItems: 'center',
-    backgroundColor: '#F3E4D0',
-    borderColor: '#CDB49A',
-    borderRadius: 16,
-    borderWidth: 1.5,
-    flexDirection: 'row',
-    minHeight: 58,
-    paddingHorizontal: 9,
-  },
-  authFieldShellFocused: {
-    backgroundColor: '#F8ECDD',
-    borderColor: colors.primary,
-    shadowColor: colors.primary,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.1,
-    shadowRadius: 9,
-  },
-  authFieldIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceSoft,
-    borderRadius: 12,
-    height: 38,
-    justifyContent: 'center',
-    width: 38,
-  },
-  authFieldIconFocused: {
-    backgroundColor: colors.primarySoft,
-  },
-  authFieldInput: {
-    color: colors.ink,
-    flex: 1,
-    fontSize: 16,
-    fontWeight: '600',
-    letterSpacing: 0,
-    minHeight: 54,
-    paddingHorizontal: 10,
-    paddingVertical: 0,
-  },
-  authFieldTrailing: {
-    alignItems: 'center',
-    height: 44,
-    justifyContent: 'center',
-    width: 44,
-  },
-  authBranchSection: {
-    backgroundColor: colors.surface,
-    borderColor: colors.line,
-    borderRadius: 18,
-    borderWidth: 1,
-    gap: 8,
-    padding: 14,
-  },
-  authSectionHeading: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 8,
-  },
-  authSectionTitle: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  authSectionHint: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '600',
-    lineHeight: 17,
-    marginBottom: 3,
-  },
-  authPrimaryButton: {
-    alignItems: 'center',
-    backgroundColor: colors.primary,
-    borderRadius: 18,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    minHeight: 58,
-    paddingLeft: 20,
-    paddingRight: 10,
-    shadowColor: colors.primary,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.22,
-    shadowRadius: 18,
-    elevation: 4,
-  },
-  authPrimaryButtonPressed: {
-    opacity: 0.9,
-    transform: [{ scale: 0.99 }],
-  },
-  authPrimaryButtonDisabled: {
-    opacity: 0.58,
-  },
-  authPrimaryButtonText: {
-    color: colors.onDark,
-    fontSize: 16,
-    fontWeight: '900',
-    letterSpacing: 0.1,
-  },
-  authPrimaryButtonIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.gold,
-    borderRadius: 13,
-    height: 38,
-    justifyContent: 'center',
-    width: 38,
-  },
-  authSessionNote: {
-    alignItems: 'flex-start',
-    backgroundColor: colors.blueSoft,
-    borderColor: 'rgba(97, 112, 85, 0.18)',
-    borderRadius: 14,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 9,
-    padding: 11,
-  },
-  authSessionNoteText: {
-    color: '#485641',
-    flex: 1,
-    fontSize: 11,
-    fontWeight: '700',
-    lineHeight: 16,
-  },
-  authSignupNote: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '600',
-    lineHeight: 18,
-    textAlign: 'center',
-  },
-  authSwitchRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    minHeight: 44,
-  },
-  authSwitchPrompt: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  authSwitchButton: {
-    justifyContent: 'center',
-    minHeight: 44,
-    paddingHorizontal: 7,
-  },
-  authSwitchButtonText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '900',
-    textDecorationLine: 'underline',
-  },
-  authFeedback: {
-    alignItems: 'flex-start',
-    borderRadius: 14,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 9,
-    padding: 12,
-  },
-  authFeedbackSuccess: {
-    backgroundColor: colors.blueSoft,
-    borderColor: 'rgba(72, 104, 69, 0.26)',
-  },
-  authFeedbackError: {
-    backgroundColor: colors.roseSoft,
-    borderColor: 'rgba(180, 72, 60, 0.28)',
-  },
-  authFeedbackInfo: {
-    backgroundColor: colors.amberSoft,
-    borderColor: 'rgba(185, 101, 36, 0.28)',
-  },
-  authFeedbackTitle: {
-    color: colors.ink,
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 0,
-    lineHeight: 18,
-  },
-  authFeedbackMessage: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0,
-    lineHeight: 17,
-    marginTop: 2,
-  },
-  authFeedbackDismiss: {
-    alignItems: 'center',
-    height: 26,
-    justifyContent: 'center',
-    marginTop: -4,
-    width: 26,
-  },
-  installCard: {
-    alignItems: 'flex-start',
-    backgroundColor: colors.blueSoft,
-    borderColor: 'rgba(97, 112, 85, 0.25)',
-    borderRadius: 16,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 10,
-    padding: 12,
-  },
-  installIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceStrong,
-    borderRadius: 12,
-    height: 40,
-    justifyContent: 'center',
-    width: 40,
-  },
-  installCopy: {
-    flex: 1,
-    gap: 4,
-    minWidth: 0,
-  },
-  installTitle: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  installText: {
-    color: '#485641',
-    fontSize: 12,
-    fontWeight: '700',
-    lineHeight: 17,
-  },
-  installButton: {
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: colors.primary,
-    borderRadius: 999,
-    flexDirection: 'row',
-    gap: 6,
-    justifyContent: 'center',
-    marginTop: 5,
-    minHeight: 40,
-    paddingHorizontal: 13,
-  },
-  installButtonText: {
-    color: colors.onDark,
-    fontSize: 12,
-    fontWeight: '900',
-  },
-  installDismiss: {
-    alignItems: 'center',
-    height: 36,
-    justifyContent: 'center',
-    marginRight: -7,
-    marginTop: -7,
-    width: 36,
-  },
-  authFooter: {
-    color: 'rgba(255, 248, 238, 0.58)',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.2,
-    lineHeight: 16,
-    paddingBottom: 24,
-    paddingHorizontal: 16,
-    paddingTop: 17,
-    textAlign: 'center',
-  },
-  authCard: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 8,
-    borderWidth: 1,
-    gap: 14,
-    padding: 16,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 14 },
-    shadowOpacity: 0.12,
-    shadowRadius: 22,
-    elevation: 4,
-  },
-  authLogo: {
-    alignSelf: 'center',
-    borderRadius: 8,
-    height: 74,
-    width: 74,
-  },
-  authTitle: {
-    color: colors.ink,
-    fontSize: 24,
-    fontWeight: '900',
-    letterSpacing: 0,
-    textAlign: 'center',
-  },
-  authHint: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0,
-    lineHeight: 19,
-    textAlign: 'center',
-  },
-  codeText: {
-    backgroundColor: colors.surfaceSoft,
-    borderColor: colors.line,
-    borderRadius: 8,
-    borderWidth: 1,
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 0,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
-    textAlign: 'center',
-  },
-  accountOverlay: {
-    bottom: 0,
-    left: 0,
-    position: 'fixed',
-    right: 0,
-    top: 0,
-    zIndex: 1000,
-  },
-  accountBackdrop: {
-    backgroundColor: 'rgba(35, 22, 15, 0.58)',
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    zIndex: 0,
-  },
-  accountDrawer: {
-    alignSelf: 'flex-end',
-    backgroundColor: colors.background,
-    borderLeftColor: colors.lineStrong,
-    borderLeftWidth: 1,
-    flex: 1,
-    height: '100%',
-    maxWidth: 430,
-    minWidth: 0,
-    paddingBottom: 'env(safe-area-inset-bottom)',
-    paddingTop: 'env(safe-area-inset-top)',
-    shadowColor: colors.deep,
-    shadowOffset: { width: -16, height: 0 },
-    shadowOpacity: 0.24,
-    shadowRadius: 36,
-    width: '100%',
-    zIndex: 1,
-  },
-  accountDrawerHeader: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceStrong,
-    borderBottomColor: colors.line,
-    borderBottomWidth: 1,
-    flexDirection: 'row',
-    gap: 12,
-    minHeight: 72,
-    paddingBottom: 10,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-  },
-  accountDrawerEyebrow: {
-    color: colors.accent,
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 1.1,
-  },
-  accountDrawerTitle: {
-    color: colors.ink,
-    fontSize: 22,
-    fontWeight: '900',
-    letterSpacing: -0.3,
-    marginTop: 2,
-  },
-  accountCloseButton: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceSoft,
-    borderColor: colors.line,
-    borderRadius: 999,
-    borderWidth: 1,
-    height: 44,
-    justifyContent: 'center',
-    width: 44,
-  },
-  accountDrawerContent: {
-    gap: 12,
-    paddingBottom: 28,
-    paddingHorizontal: 12,
-    paddingTop: 12,
-  },
-  accountHeroCard: {
-    alignItems: 'center',
-    backgroundColor: colors.primary,
-    borderRadius: 22,
-    overflow: 'hidden',
-    paddingBottom: 18,
-    paddingHorizontal: 16,
-    paddingTop: 22,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.18,
-    shadowRadius: 20,
-  },
-  accountAvatarEditor: {
-    alignItems: 'center',
-    marginBottom: 11,
-    position: 'relative',
-  },
-  avatarCameraButton: {
-    alignItems: 'center',
-    backgroundColor: colors.accent,
-    borderColor: colors.onDark,
-    borderRadius: 999,
-    borderWidth: 2,
-    bottom: -3,
-    height: 36,
-    justifyContent: 'center',
-    position: 'absolute',
-    right: -3,
-    width: 36,
-  },
-  accountHeroName: {
-    color: colors.onDark,
-    fontSize: 20,
-    fontWeight: '900',
-    textAlign: 'center',
-  },
-  accountHeroEmail: {
-    color: 'rgba(255, 248, 238, 0.7)',
-    fontSize: 12,
-    fontWeight: '700',
-    marginTop: 3,
-    textAlign: 'center',
-  },
-  accountHeroSync: {
-    color: 'rgba(255, 248, 238, 0.72)',
-    fontSize: 11,
-    fontWeight: '800',
-    marginTop: 7,
-  },
-  accountHeroSyncError: {
-    color: '#FFD2CA',
-  },
-  accountRolePill: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderRadius: 999,
-    flexDirection: 'row',
-    gap: 5,
-    marginTop: 10,
-    minHeight: 30,
-    paddingHorizontal: 11,
-  },
-  accountRolePillText: {
-    color: colors.primary,
-    fontSize: 11,
-    fontWeight: '900',
-  },
-  accountSectionCard: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 18,
-    borderWidth: 1,
-    gap: 13,
-    padding: 13,
-  },
-  syncErrorCard: {
-    alignItems: 'flex-start',
-    backgroundColor: colors.roseSoft,
-    borderColor: 'rgba(180, 72, 60, 0.3)',
-    borderRadius: 16,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 9,
-    padding: 12,
-  },
-  syncErrorTitle: {
-    color: colors.ink,
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  syncErrorText: {
-    color: colors.rose,
-    fontSize: 11,
-    fontWeight: '700',
-    lineHeight: 16,
-    marginTop: 3,
-  },
-  syncRetryButton: {
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: colors.rose,
-    borderRadius: 999,
-    flexDirection: 'row',
-    gap: 6,
-    justifyContent: 'center',
-    marginTop: 8,
-    minHeight: 40,
-    paddingHorizontal: 13,
-  },
-  syncRetryText: {
-    color: colors.onDark,
-    fontSize: 12,
-    fontWeight: '900',
-  },
-  accountSectionHeading: {
-    alignItems: 'flex-start',
-    flexDirection: 'row',
-    gap: 9,
-  },
-  accountSectionTitle: {
-    color: colors.ink,
-    fontSize: 15,
-    fontWeight: '900',
-  },
-  accountSectionHint: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
-    lineHeight: 16,
-    marginTop: 2,
-  },
-  profileInfoRow: {
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderColor: colors.line,
-    borderRadius: 14,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 10,
-    minHeight: 60,
-    padding: 10,
-  },
-  profileInfoIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderRadius: 11,
-    height: 38,
-    justifyContent: 'center',
-    width: 38,
-  },
-  profileInfoCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  profileInfoLabel: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  profileInfoValue: {
-    color: colors.ink,
-    fontSize: 13,
-    fontWeight: '900',
-    marginTop: 2,
-  },
-  accountSecurity: {
-    gap: 10,
-  },
-  accountSecurityActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  accountLoadingText: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '700',
-    paddingVertical: 8,
-    textAlign: 'center',
-  },
-  staffList: {
-    gap: 8,
-  },
-  staffCard: {
-    backgroundColor: colors.surface,
-    borderColor: colors.line,
-    borderRadius: 15,
-    borderWidth: 1,
-    overflow: 'hidden',
-  },
-  staffCardActive: {
-    borderColor: colors.primary,
-  },
-  staffCardButton: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 9,
-    minHeight: 70,
-    padding: 10,
-    textAlign: 'left',
-  },
-  staffCardCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  staffCardName: {
-    color: colors.ink,
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  staffCardMeta: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 3,
-  },
-  staffCardPhone: {
-    color: colors.primary,
-    fontSize: 11,
-    fontWeight: '800',
-    marginTop: 3,
-  },
-  staffEditor: {
-    borderTopColor: colors.line,
-    borderTopWidth: 1,
-    gap: 12,
-    padding: 11,
-  },
-  nativeField: {
-    gap: 6,
-  },
-  nativeFieldHint: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
-    lineHeight: 15,
-  },
-  accountRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  accountDetails: {
-    flex: 1,
-    minWidth: 0,
-  },
-  accountActions: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  accountIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderRadius: 8,
-    height: 42,
-    justifyContent: 'center',
-    width: 42,
-  },
-  accountName: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  accountMeta: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0,
-    marginTop: 2,
-  },
-  accountSync: {
-    color: colors.primary,
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0,
-    marginTop: 3,
-  },
-  passwordToggleButton: {
-    alignItems: 'center',
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-    borderRadius: 999,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 5,
-    justifyContent: 'center',
-    minHeight: 36,
-    paddingHorizontal: 10,
-  },
-  passwordToggleText: {
-    color: colors.onDark,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  signOutButton: {
-    alignItems: 'center',
-    backgroundColor: colors.rose,
-    borderColor: colors.rose,
-    borderRadius: 999,
-    borderWidth: 1,
-    justifyContent: 'center',
-    minHeight: 36,
-    paddingHorizontal: 10,
-  },
-  signOutText: {
-    color: colors.onDark,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  passwordPanel: {
-    borderTopColor: colors.line,
-    borderTopWidth: 1,
-    gap: 12,
-    marginTop: 2,
-    paddingTop: 12,
-  },
-  passwordPanelHeader: {
-    alignItems: 'flex-start',
-    flexDirection: 'row',
-    gap: 10,
-  },
-  passwordPanelTitle: {
-    color: colors.ink,
-    fontSize: 15,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  passwordPanelHint: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0,
-    lineHeight: 17,
-    marginTop: 3,
-  },
-  passwordActionRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    justifyContent: 'flex-end',
-  },
-  passwordCancelButton: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceSoft,
-    borderColor: colors.line,
-    borderRadius: 8,
-    borderWidth: 1,
-    justifyContent: 'center',
-    minHeight: 42,
-    paddingHorizontal: 16,
-  },
-  passwordCancelText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  passwordSaveButton: {
-    alignItems: 'center',
-    backgroundColor: colors.primary,
-    borderRadius: 8,
-    flexDirection: 'row',
-    gap: 7,
-    justifyContent: 'center',
-    minHeight: 42,
-    paddingHorizontal: 16,
-  },
-  passwordSaveText: {
-    color: colors.onDark,
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  buttonDisabled: {
-    opacity: 0.55,
-  },
-  contextPanel: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 18,
-    borderWidth: 1,
-    gap: 10,
-    padding: 12,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.07,
-    shadowRadius: 16,
-    elevation: 2,
-  },
-  contextLabel: {
-    color: colors.ink,
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  roleGrid: {
-    gap: 8,
-  },
-  roleOption: {
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderColor: colors.line,
-    borderRadius: 8,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 10,
-    minHeight: 58,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
-  },
-  roleOptionActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  roleOptionTitle: {
-    color: colors.ink,
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  roleOptionTitleActive: {
-    color: colors.onDark,
-  },
-  roleOptionText: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 0,
-    marginTop: 2,
-  },
-  roleOptionTextActive: {
-    color: colors.onDark,
-  },
-  branchPills: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  branchPill: {
-    backgroundColor: colors.surface,
-    borderColor: colors.line,
-    borderRadius: 14,
-    borderWidth: 1,
-    minHeight: 54,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    width: 'calc(50% - 4px)',
-  },
-  branchPillActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  branchPillName: {
-    color: colors.ink,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  branchPillNameActive: {
-    color: colors.onDark,
-  },
-  branchPillMeta: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0,
-    marginTop: 3,
-  },
-  branchPillMetaActive: {
-    color: colors.onDark,
-  },
-  metricsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    minWidth: 0,
-  },
-  metricTile: {
-    backgroundColor: colors.surfaceStrong,
-    borderRadius: 16,
-    borderWidth: 1,
-    flex: 1,
-    minWidth: 0,
-    minHeight: 92,
-    overflow: 'hidden',
-    padding: 10,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.08,
-    shadowRadius: 16,
-    elevation: 2,
-  },
-  metricAccent: {
-    height: 3,
-    left: 0,
-    position: 'absolute',
-    right: 0,
-    top: 0,
-  },
-  metricIcon: {
-    alignItems: 'center',
-    borderRadius: 10,
-    height: 32,
-    justifyContent: 'center',
-    marginBottom: 8,
-    width: 32,
-  },
-  metricValue: {
-    color: colors.ink,
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
-  metricLabel: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0,
-    marginTop: 2,
-  },
-  tabs: {
-    backgroundColor: 'rgba(255, 252, 247, 0.97)',
-    borderColor: colors.line,
-    borderRadius: 20,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 4,
-    marginBottom: 8,
-    marginTop: 8,
-    padding: 5,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.1,
-    shadowRadius: 18,
-    elevation: 4,
-  },
-  tab: {
-    alignItems: 'center',
-    borderRadius: 15,
-    flex: 1,
-    gap: 3,
-    justifyContent: 'center',
-    minHeight: 56,
-    minWidth: 0,
-    paddingHorizontal: 5,
-  },
-  tabActive: {
-    backgroundColor: colors.primary,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.14,
-    shadowRadius: 12,
-  },
-  tabText: {
-    color: colors.muted,
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
-  tabTextActive: {
-    color: colors.onDark,
-  },
-  content: {
-    gap: 12,
-    paddingBottom: 16,
-  },
-  screen: {
-    gap: 14,
-  },
-  closingForm: {
-    gap: 12,
-  },
-  closingSection: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 16,
-    borderWidth: 1,
-    gap: 10,
-    padding: 12,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.07,
-    shadowRadius: 16,
-    elevation: 2,
-  },
-  fieldGroup: {
-    gap: 8,
-  },
-  fieldGroupTitle: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '900',
-    letterSpacing: 0,
-    marginTop: 2,
-  },
-  plasticCupSection: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 16,
-    borderWidth: 1,
-    gap: 12,
-    padding: 12,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.07,
-    shadowRadius: 16,
-    elevation: 2,
-  },
-  closingSectionHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 10,
-    justifyContent: 'space-between',
-  },
-  closingSectionTitle: {
-    color: colors.ink,
-    fontSize: 16,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  cupEntry: {
-    backgroundColor: colors.surface,
-    borderColor: colors.line,
-    borderRadius: 14,
-    borderWidth: 1,
-    gap: 8,
-    padding: 10,
-  },
-  cupEquationRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 5,
-  },
-  cupName: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '900',
-    letterSpacing: 0,
-    minWidth: 50,
-  },
-  cupEquationInput: {
-    backgroundColor: colors.surfaceTint,
-    borderColor: colors.lineStrong,
-    borderRadius: 10,
-    borderWidth: 1,
-    color: colors.ink,
-    fontSize: 15,
-    fontWeight: '900',
-    height: 44,
-    letterSpacing: 0,
-    paddingHorizontal: 6,
-    paddingVertical: 0,
-    textAlign: 'center',
-    width: 54,
-  },
-  inputError: {
-    borderColor: colors.rose,
-    backgroundColor: colors.roseSoft,
-  },
-  equationMark: {
-    color: colors.muted,
-    fontSize: 16,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  soldEquationValue: {
-    alignItems: 'center',
-    backgroundColor: colors.accentSoft,
-    borderRadius: 7,
-    flexDirection: 'row',
-    gap: 3,
-    minHeight: 38,
-    paddingHorizontal: 7,
-  },
-  soldEquationNumber: {
-    color: colors.primary,
-    fontSize: 15,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  equationUnit: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
-  cupBalanceRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  machineCupGroup: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 6,
-  },
-  machineCupLabel: {
-    color: colors.ink,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  cupBalanceBadge: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderColor: colors.lineStrong,
-    borderRadius: 7,
-    borderWidth: 1,
-    justifyContent: 'center',
-    minHeight: 38,
-    minWidth: 92,
-    paddingHorizontal: 10,
-  },
-  cupBalanceBadgeShort: {
-    backgroundColor: colors.roseSoft,
-    borderColor: '#D79A91',
-  },
-  cupBalanceBadgeOver: {
-    backgroundColor: colors.amberSoft,
-    borderColor: '#E2B889',
-  },
-  cupBalanceText: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  cupBalanceTextShort: {
-    color: colors.rose,
-  },
-  cupBalanceTextOver: {
-    color: colors.amber,
-  },
-  closingCard: {
-    backgroundColor: '#F6E8D6',
-    borderColor: colors.lineStrong,
-    borderRadius: 14,
-    borderWidth: 1,
-    gap: 10,
-    minHeight: 96,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-  },
-  closingCardError: {
-    borderColor: colors.rose,
-    backgroundColor: colors.roseSoft,
-  },
-  requiredNotice: {
-    alignItems: 'center',
-    backgroundColor: colors.amberSoft,
-    borderColor: '#E2B889',
-    borderRadius: 8,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  requiredNoticeText: {
-    color: colors.amber,
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0,
-    textAlign: 'center',
-  },
-  closingLabel: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  requiredMark: {
-    color: colors.rose,
-  },
-  closingInput: {
-    backgroundColor: colors.surfaceTint,
-    borderColor: colors.lineStrong,
-    borderRadius: 12,
-    borderWidth: 1,
-    color: colors.ink,
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 0,
-    minHeight: 48,
-    paddingHorizontal: 12,
-    paddingVertical: 0,
-  },
-  closingInputError: {
-    borderColor: colors.rose,
-  },
-  inputSuffix: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0,
-    marginTop: -6,
-  },
-  transferTotal: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 0,
-    marginTop: -4,
-  },
-  exportStage: {
-    left: -5000,
-    position: 'absolute',
-    top: 0,
-    width: 252,
-  },
-  exportSheet: {
-    backgroundColor: colors.background,
-    paddingBottom: 18,
-    paddingHorizontal: 11,
-    paddingTop: 14,
-    width: 252,
-  },
-  exportPreview: {
-    gap: 11,
-  },
-  exportCard: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 8,
-    borderWidth: 1,
-    gap: 7,
-    paddingHorizontal: 13,
-    paddingVertical: 16,
-  },
-  exportCardTitle: {
-    color: colors.ink,
-    fontSize: 11.2,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
-  exportRequired: {
-    color: colors.rose,
-  },
-  exportLines: {
-    gap: 2,
-  },
-  exportLine: {
-    color: colors.ink,
-    fontSize: 8.8,
-    fontWeight: '500',
-    letterSpacing: 0,
-    lineHeight: 17,
-  },
-  sectionHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 10,
-  },
-  sectionCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  sectionIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderRadius: 8,
-    borderColor: colors.line,
-    borderWidth: 1,
-    height: 40,
-    justifyContent: 'center',
-    width: 40,
-  },
-  sectionTitle: {
-    color: colors.ink,
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
-  sectionSubtitle: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0,
-    marginTop: 1,
-  },
-  statusBand: {
-    alignItems: 'center',
-    borderColor: colors.line,
-    borderWidth: 1,
-    borderRadius: 16,
-    flexDirection: 'row',
-    gap: 12,
-    padding: 14,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.06,
-    shadowRadius: 12,
-    elevation: 1,
-  },
-  statusIn: {
-    backgroundColor: colors.primarySoft,
-  },
-  statusOut: {
-    backgroundColor: colors.roseSoft,
-  },
-  statusNeutral: {
-    backgroundColor: colors.surfaceStrong,
-  },
-  statusIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceStrong,
-    borderRadius: 8,
-    height: 42,
-    justifyContent: 'center',
-    width: 42,
-  },
-  statusTitle: {
-    color: colors.ink,
-    fontSize: 16,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
-  statusText: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0,
-    marginTop: 2,
-  },
-  flex: {
-    flex: 1,
-  },
-  field: {
-    gap: 7,
-  },
-  inputLabel: {
-    color: colors.ink,
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
-  inputShell: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceTint,
-    borderColor: colors.lineStrong,
-    borderRadius: 14,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 9,
-    minHeight: 48,
-    paddingHorizontal: 12,
-  },
-  inputShellMultiline: {
-    alignItems: 'flex-start',
-    minHeight: 88,
-    paddingTop: 11,
-  },
-  input: {
-    color: colors.ink,
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '600',
-    letterSpacing: 0,
-    paddingVertical: 0,
-  },
-  inputTrailingButton: {
-    alignItems: 'center',
-    height: 34,
-    justifyContent: 'center',
-    width: 34,
-  },
-  inputMultiline: {
-    minHeight: 64,
-    textAlignVertical: 'top',
-  },
-  buttonRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  monthNavigator: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceTint,
-    borderColor: colors.lineStrong,
-    borderRadius: 16,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 10,
-    justifyContent: 'space-between',
-    padding: 7,
-  },
-  monthButton: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceSoft,
-    borderColor: colors.line,
-    borderRadius: 12,
-    borderWidth: 1,
-    height: 44,
-    justifyContent: 'center',
-    width: 44,
-  },
-  monthCurrent: {
-    alignItems: 'center',
-    flex: 1,
-    flexDirection: 'row',
-    gap: 8,
-    justifyContent: 'center',
-    minHeight: 46,
-    minWidth: 0,
-    paddingHorizontal: 6,
-  },
-  monthCurrentPressed: {
-    backgroundColor: colors.primarySoft,
-    borderRadius: 12,
-  },
-  monthCurrentCopy: {
-    minWidth: 0,
-  },
-  monthCurrentText: {
-    color: colors.ink,
-    fontSize: 15,
-    fontWeight: '900',
-    letterSpacing: 0,
-    textAlign: 'center',
-  },
-  monthCurrentHint: {
-    color: colors.muted,
-    fontSize: 9,
-    fontWeight: '700',
-    marginTop: 1,
-    textAlign: 'center',
-  },
-  monthPickerOverlay: {
-    bottom: 0,
-    left: 0,
-    position: 'fixed',
-    right: 0,
-    top: 0,
-    zIndex: 1200,
-  },
-  monthPickerBackdrop: {
-    backgroundColor: 'rgba(35, 22, 15, 0.58)',
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    zIndex: 0,
-  },
-  monthPickerSheet: {
-    alignSelf: 'center',
-    backgroundColor: colors.background,
-    borderColor: colors.lineStrong,
-    borderTopLeftRadius: 26,
-    borderTopRightRadius: 26,
-    borderWidth: 1,
-    bottom: 0,
-    gap: 14,
-    maxWidth: 430,
-    paddingBottom: 'calc(18px + env(safe-area-inset-bottom))',
-    paddingHorizontal: 14,
-    paddingTop: 9,
-    position: 'absolute',
-    width: '100%',
-    zIndex: 1,
-  },
-  monthPickerHandle: {
-    alignSelf: 'center',
-    backgroundColor: colors.lineStrong,
-    borderRadius: 999,
-    height: 4,
-    width: 44,
-  },
-  monthPickerHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 10,
-  },
-  monthPickerEyebrow: {
-    color: colors.accent,
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 1,
-  },
-  monthPickerTitle: {
-    color: colors.ink,
-    fontSize: 22,
-    fontWeight: '900',
-    marginTop: 2,
-  },
-  monthPickerYearRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 9,
-  },
-  monthPickerYearButton: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceTint,
-    borderColor: colors.lineStrong,
-    borderRadius: 12,
-    borderWidth: 1,
-    height: 46,
-    justifyContent: 'center',
-    width: 48,
-  },
-  monthPickerYearDisplay: {
-    alignItems: 'center',
-    backgroundColor: colors.primary,
-    borderRadius: 13,
-    flex: 1,
-    justifyContent: 'center',
-    minHeight: 46,
-  },
-  monthPickerYearText: {
-    color: colors.onDark,
-    fontSize: 19,
-    fontWeight: '900',
-  },
-  monthPickerGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 7,
-  },
-  monthPickerOption: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceTint,
-    borderColor: colors.line,
-    borderRadius: 12,
-    borderWidth: 1,
-    justifyContent: 'center',
-    minHeight: 54,
-    paddingHorizontal: 4,
-    width: 'calc(25% - 6px)',
-  },
-  monthPickerOptionCurrent: {
-    borderColor: colors.accent,
-    borderWidth: 2,
-  },
-  monthPickerOptionSelected: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  monthPickerOptionText: {
-    color: colors.ink,
-    fontSize: 12,
-    fontWeight: '900',
-    textAlign: 'center',
-  },
-  monthPickerOptionTextSelected: {
-    color: colors.onDark,
-  },
-  monthPickerNowText: {
-    color: colors.accent,
-    fontSize: 8,
-    fontWeight: '900',
-    marginTop: 2,
-  },
-  monthPickerTodayButton: {
-    alignItems: 'center',
-    alignSelf: 'center',
-    backgroundColor: colors.primarySoft,
-    borderColor: colors.lineStrong,
-    borderRadius: 999,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 7,
-    justifyContent: 'center',
-    minHeight: 44,
-    paddingHorizontal: 15,
-  },
-  monthPickerTodayText: {
-    color: colors.primary,
-    fontSize: 12,
-    fontWeight: '900',
-  },
-  attendanceQuickCard: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 16,
-    borderWidth: 1,
-    gap: 11,
-    padding: 12,
-  },
-  attendanceQuickHeading: {
-    gap: 3,
-  },
-  attendanceQuickTitle: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  attendanceQuickHint: {
-    color: colors.muted,
-    fontSize: 11,
-    lineHeight: 16,
-  },
-  attendanceQuickFields: {
-    flexDirection: 'row',
-    gap: 9,
-  },
-  attendanceQuickField: {
-    flex: 1,
-    gap: 6,
-  },
-  attendanceQuickLabel: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  attendanceQuickInput: {
-    backgroundColor: '#F1DFC7',
-    borderColor: '#C9A989',
-    borderRadius: 9,
-    borderWidth: 1,
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '800',
-    minHeight: 38,
-    paddingHorizontal: 9,
-    textAlign: 'center',
-  },
-  attendanceQuickButton: {
-    alignItems: 'center',
-    backgroundColor: colors.primary,
-    borderRadius: 9,
-    justifyContent: 'center',
-    minHeight: 36,
-    paddingHorizontal: 8,
-  },
-  attendanceQuickButtonDisabled: {
-    backgroundColor: '#A78D7A',
-  },
-  attendanceQuickButtonText: {
-    color: colors.onDark,
-    fontSize: 11,
-    fontWeight: '900',
-  },
-  attendanceTable: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 16,
-    borderWidth: 1,
-    overflow: 'hidden',
-  },
-  attendanceRow: {
-    alignItems: 'center',
-    borderBottomColor: colors.line,
-    borderBottomWidth: 1,
-    flexDirection: 'row',
-    minHeight: 44,
-  },
-  attendanceHeaderRow: {
-    backgroundColor: colors.amberSoft,
-  },
-  attendanceSundayRow: {
-    backgroundColor: '#F8ECE5',
-  },
-  attendanceCell: {
-    color: colors.ink,
-    flex: 1,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0,
-    paddingHorizontal: 6,
-    textAlign: 'center',
-  },
-  attendanceDateCell: {
-    flex: 0.7,
-  },
-  attendanceWeekdayCell: {
-    flex: 0.9,
-  },
-  attendanceInput: {
-    backgroundColor: '#F1DFC7',
-    borderColor: '#C9A989',
-    borderRadius: 10,
-    borderWidth: 1,
-    color: colors.ink,
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '800',
-    letterSpacing: 0,
-    marginHorizontal: 5,
-    minHeight: 42,
-    minWidth: 0,
-    paddingHorizontal: 7,
-    paddingVertical: 0,
-    textAlign: 'center',
-  },
-  attendanceInputReadonly: {
-    backgroundColor: '#E6D9C8',
-    borderColor: colors.line,
-    color: colors.muted,
-  },
-  attendanceSundayInput: {
-    backgroundColor: '#F0DCD5',
-    borderColor: 'rgba(180, 72, 60, 0.25)',
-    color: colors.rose,
-  },
-  payrollSummary: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 16,
-    borderWidth: 1,
-    overflow: 'hidden',
-  },
-  summaryLine: {
-    alignItems: 'center',
-    borderBottomColor: colors.line,
-    borderBottomWidth: 1,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    minHeight: 42,
-    paddingHorizontal: 12,
-  },
-  summaryLineStrong: {
-    backgroundColor: colors.gold,
-  },
-  summaryLineLabel: {
-    color: colors.ink,
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
-  summaryLineLabelStrong: {
-    color: colors.dark,
-    fontWeight: '900',
-  },
-  summaryLineValue: {
-    color: colors.primary,
-    fontSize: 13,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  summaryLineValueStrong: {
-    color: colors.dark,
-  },
-  managerPanel: {
-    gap: 12,
-    marginTop: 8,
-  },
-  managerPayrollList: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 16,
-    borderWidth: 1,
-    gap: 11,
-    padding: 13,
-  },
-  managerPayrollListHeading: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  managerPayrollListTitleWrap: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 7,
-  },
-  managerPayrollListTitle: {
-    color: colors.ink,
-    fontSize: 15,
-    fontWeight: '900',
-  },
-  managerPayrollRefresh: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceSoft,
-    borderColor: colors.line,
-    borderRadius: 9,
-    borderWidth: 1,
-    height: 34,
-    justifyContent: 'center',
-    width: 34,
-  },
-  managerPayrollEmpty: {
-    color: colors.muted,
-    fontSize: 12,
-    lineHeight: 18,
-  },
-  managerPayrollError: {
-    color: colors.rose,
-    fontSize: 12,
-    fontWeight: '700',
-    lineHeight: 18,
-  },
-  managerPayrollEmployeeGrid: {
-    gap: 7,
-  },
-  managerPayrollEmployeeCard: {
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderColor: colors.line,
-    borderRadius: 12,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 8,
-    justifyContent: 'space-between',
-    minHeight: 58,
-    paddingHorizontal: 11,
-    paddingVertical: 9,
-  },
-  managerPayrollEmployeeCardSelected: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  managerPayrollEmployeeName: {
-    color: colors.ink,
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  managerPayrollEmployeeNameSelected: {
-    color: colors.onDark,
-  },
-  managerPayrollEmployeeMeta: {
-    color: colors.muted,
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 2,
-  },
-  managerPayrollEmployeeMetaSelected: {
-    color: 'rgba(255, 248, 238, 0.74)',
-  },
-  managerPayrollDetail: {
-    backgroundColor: colors.surface,
-    borderColor: colors.primarySoft,
-    borderRadius: 17,
-    borderWidth: 1,
-    gap: 12,
-    padding: 13,
-  },
-  managerPayrollDetailHeading: {
-    alignItems: 'flex-start',
-    flexDirection: 'row',
-    gap: 10,
-    justifyContent: 'space-between',
-  },
-  managerPayrollDetailEyebrow: {
-    color: colors.accent,
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 0.45,
-  },
-  managerPayrollDetailName: {
-    color: colors.ink,
-    fontSize: 18,
-    fontWeight: '950',
-    lineHeight: 23,
-    marginTop: 2,
-  },
-  managerPayrollDetailHint: {
-    color: colors.muted,
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 3,
-  },
-  managerPayrollClose: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceSoft,
-    borderRadius: 9,
-    height: 34,
-    justifyContent: 'center',
-    width: 34,
-  },
-  managerPayrollBackButton: {
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: colors.surface,
-    borderColor: colors.line,
-    borderRadius: 12,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 6,
-    minHeight: 38,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  managerPayrollBackText: {
-    color: colors.primary,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0,
-    lineHeight: 16,
-  },
-  pendingText: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0,
-    lineHeight: 18,
-  },
-  ownerBranchList: {
-    gap: 8,
-  },
-  ownerBranchRow: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 16,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 10,
-    minHeight: 68,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  ownerBranchRowActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  ownerBranchIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceSoft,
-    borderRadius: 8,
-    height: 38,
-    justifyContent: 'center',
-    width: 38,
-  },
-  ownerBranchName: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  ownerBranchNameActive: {
-    color: colors.onDark,
-  },
-  ownerBranchMeta: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0,
-    marginTop: 3,
-  },
-  ownerBranchMetaActive: {
-    color: colors.onDark,
-  },
-  primaryButton: {
-    alignItems: 'center',
-    backgroundColor: colors.primary,
-    borderRadius: 999,
-    flex: 1,
-    flexDirection: 'row',
-    gap: 8,
-    justifyContent: 'center',
-    minHeight: 50,
-    paddingHorizontal: 14,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.18,
-    shadowRadius: 18,
-    elevation: 3,
-  },
-  dangerButton: {
-    backgroundColor: colors.rose,
-  },
-  primaryButtonText: {
-    color: colors.onDark,
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
-  chipGroup: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  chipGroupCompact: {
-    marginTop: -4,
-  },
-  chip: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 999,
-    borderWidth: 1,
-    minHeight: 38,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  chipCompact: {
-    minHeight: 34,
-    paddingHorizontal: 11,
-    paddingVertical: 7,
-  },
-  chipActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  chipText: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
-  chipTextActive: {
-    color: colors.onDark,
-  },
-  supplySection: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 16,
-    borderWidth: 1,
-    gap: 9,
-    padding: 12,
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.07,
-    shadowRadius: 16,
-    elevation: 2,
-  },
-  supplySectionTitle: {
-    color: colors.ink,
-    fontSize: 15,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  supplyGrid: {
-    display: 'grid',
-    gap: 9,
-    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-  },
-  supplyItemRow: {
-    backgroundColor: colors.surface,
-    borderColor: colors.line,
-    borderRadius: 14,
-    borderWidth: 1,
-    gap: 9,
-    padding: 10,
-  },
-  supplyItemHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 10,
-  },
-  supplyItemName: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  supplyItemUnit: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0,
-    marginTop: 2,
-  },
-  supplyQuantityRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 8,
-  },
-  supplyQuantityInput: {
-    backgroundColor: colors.surfaceTint,
-    borderColor: colors.lineStrong,
-    borderRadius: 11,
-    borderWidth: 1,
-    color: colors.ink,
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: 0,
-    minHeight: 48,
-    paddingHorizontal: 10,
-    paddingVertical: 0,
-  },
-  supplyQuantityUnit: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0,
-    minWidth: 48,
-  },
-  supplyStatusButton: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.lineStrong,
-    borderRadius: 999,
-    borderWidth: 1,
-    minHeight: 34,
-    minWidth: 64,
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-  },
-  supplyStatusButtonEmpty: {
-    backgroundColor: colors.roseSoft,
-    borderColor: '#D79A91',
-  },
-  supplyStatusButtonText: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  supplyStatusButtonTextEmpty: {
-    color: colors.rose,
-  },
-  supplyStatusToggle: {
-    alignItems: 'center',
-    borderRadius: 999,
-    minHeight: 34,
-    minWidth: 58,
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-  },
-  supplyStatusToggleAvailable: {
-    backgroundColor: colors.blue,
-  },
-  supplyStatusToggleEmpty: {
-    backgroundColor: colors.rose,
-  },
-  supplyStatusToggleText: {
-    color: colors.onDark,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  supplyStatusSwitch: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 999,
-    borderWidth: 1,
-    flexDirection: 'row',
-    padding: 3,
-  },
-  supplyStatusOption: {
-    alignItems: 'center',
-    borderRadius: 999,
-    minHeight: 30,
-    minWidth: 52,
-    justifyContent: 'center',
-    paddingHorizontal: 10,
-  },
-  supplyStatusOptionActive: {
-    backgroundColor: colors.primary,
-  },
-  supplyStatusOptionEmpty: {
-    backgroundColor: colors.rose,
-  },
-  supplyStatusOptionText: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  supplyStatusOptionTextActive: {
-    color: colors.onDark,
-  },
-  supplyStatusOptionTextEmpty: {
-    color: colors.onDark,
-  },
-  gridTwo: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  calculationBox: {
-    alignItems: 'center',
-    backgroundColor: colors.amberSoft,
-    borderColor: '#E2B889',
-    borderRadius: 8,
-    borderWidth: 1,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    padding: 14,
-  },
-  calculationLabel: {
-    color: colors.amber,
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
-  calculationValue: {
-    color: colors.ink,
-    fontSize: 18,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  closeSummary: {
-    alignItems: 'center',
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 8,
-    borderWidth: 1,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    padding: 14,
-  },
-  summaryDivider: {
-    backgroundColor: colors.line,
-    height: 42,
-    width: 1,
-  },
-  summaryLabel: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0,
-    marginBottom: 4,
-  },
-  summaryValue: {
-    color: colors.ink,
-    fontSize: 17,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  history: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.line,
-    borderRadius: 16,
-    borderWidth: 1,
-    marginTop: 2,
-    overflow: 'hidden',
-    shadowColor: colors.deep,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.07,
-    shadowRadius: 16,
-    elevation: 2,
-  },
-  historyHeader: {
-    alignItems: 'center',
-    borderBottomColor: colors.line,
-    borderBottomWidth: 1,
-    backgroundColor: colors.surface,
-    flexDirection: 'row',
-    gap: 8,
-    padding: 13,
-  },
-  historyTitle: {
-    color: colors.ink,
-    fontSize: 15,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  historyRow: {
-    alignItems: 'center',
-    borderBottomColor: colors.line,
-    borderBottomWidth: 1,
-    flexDirection: 'row',
-    gap: 10,
-    padding: 13,
-  },
-  historyRowTitle: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: '900',
-    letterSpacing: 0,
-  },
-  historyRowMeta: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0,
-    marginTop: 3,
-  },
-  historyRowValue: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0,
-    marginTop: 4,
-  },
-  emptyText: {
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0,
-    padding: 14,
-  },
-});

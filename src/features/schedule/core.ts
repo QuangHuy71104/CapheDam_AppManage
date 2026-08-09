@@ -22,10 +22,13 @@ export type WorkSchedule = {
 };
 
 export type PublishedScheduleAssignment = {
+  allowance: number;
+  breakfastAllowance: number;
   dateKey: string;
   employeeId: string;
   employeeName: string;
   hours: number;
+  hourlyRate: number;
   shift: ScheduleShift;
 };
 
@@ -45,6 +48,7 @@ export type ScheduleBranch = {
 export type ScheduleScreenProps = {
   branch: ScheduleBranch;
   managerId: string;
+  onDirtyChange?: (dirty: boolean) => void;
   onPublish?: (schedule: PublishedWorkSchedule) => void | Promise<void>;
 };
 

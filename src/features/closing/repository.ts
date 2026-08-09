@@ -20,14 +20,33 @@ const mapShiftCloseReport = (item: unknown): ShiftCloseReport => {
   };
 };
 
-export const listShiftCloseReports = async (profile: UserProfile): Promise<ShiftCloseReport[]> => {
+export type ShiftCloseReportQuery = {
+  branchId?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export const listShiftCloseReports = async (
+  profile: UserProfile,
+  query: ShiftCloseReportQuery = {},
+): Promise<ShiftCloseReport[]> => {
+  const limit = Math.min(Math.max(query.limit ?? 200, 1), 500);
+  const offset = Math.max(query.offset ?? 0, 0);
   let request = supabase.from('shift_close_reports').select('*');
 
   if (profile.role !== 'owner' && profile.branchId) {
     request = request.eq('branch_id', profile.branchId);
   }
 
-  const { data, error } = await request.order('reported_at', { ascending: false });
+  if (profile.role === 'owner' && query.branchId) request = request.eq('branch_id', query.branchId);
+  if (query.from) request = request.gte('reported_at', query.from);
+  if (query.to) request = request.lt('reported_at', query.to);
+
+  const { data, error } = await request
+    .order('reported_at', { ascending: false })
+    .range(offset, offset + limit - 1);
 
   if (error) {
     throw error;
