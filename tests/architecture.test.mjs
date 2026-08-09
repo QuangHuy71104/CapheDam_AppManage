@@ -157,6 +157,19 @@ test('sensitive payroll writes use compare-and-swap database functions', () => {
   assert.match(migration, /current_date/);
 });
 
+test('profile compensation fields are repaired before payroll snapshots use them', () => {
+  const repairMigration = readFileSync(
+    new URL('../supabase/migrations/202608091900_profiles_pay_fields.sql', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(repairMigration, /add column if not exists hourly_rate integer not null default 24000/);
+  assert.match(repairMigration, /add column if not exists allowance integer not null default 200000/);
+  assert.match(repairMigration, /add column if not exists breakfast_allowance integer not null default 27000/);
+  assert.ok('202608082306' < '202608091900');
+  assert.ok('202608091900' < '202608091930');
+});
+
 test('operational reads are bounded and support scoped filters', () => {
   for (const path of [
     'src/features/inventory/repository.ts',
