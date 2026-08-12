@@ -4,14 +4,14 @@ Web app/PWA nội bộ, xây bằng React DOM + Vite và tối ưu cho nhân vi�
 
 ## Chức năng chính
 
-- Ba vai trò: chủ cửa hàng, quản lý chi nhánh và nhân viên.
+- Ba vai trò: chủ cửa hàng, quản lý chi nhánh và nhân viên. Vai trò Chủ cửa hàng chỉ dành cho Nguyễn Thanh Đạm (anh Đạm) và Trương Thanh Thảo (chị Gấu).
 - Đăng nhập và quản lý phiên bằng Supabase Auth; tài khoản nội bộ do quản trị viên cấp.
 - Form đăng nhập mobile-first, vùng chạm lớn, hỗ trợ autofill và trình quản lý mật khẩu của trình duyệt.
 - Đổi mật khẩu sau khi xác thực lại mật khẩu hiện tại. Mật khẩu không được lưu dạng đọc được trong localStorage hay cơ sở dữ liệu ứng dụng.
 - Hồ sơ tài khoản với avatar, số điện thoại, vị trí, chi nhánh, hình thức làm việc và thâm niên.
 - Nhân viên tự sửa tên, số điện thoại, ảnh đại diện; Chủ cửa hàng quản lý vai trò, chi nhánh, Full/Part time và ngày bắt đầu của nhân sự.
 - Xếp lịch theo thẻ tên gọn, chọn giờ về ca sáng 9h/10h/11h/đủ ca, tự điền bảng công khi gửi lịch và tải ảnh lịch dạng bảng.
-- Chấm công, tính lương và duyệt lương theo từng nhân viên; quản lí có thể xem/sửa các tháng trước trước khi gửi tổng hợp cho chủ cửa hàng.
+- Chấm công, tính lương và duyệt lương theo từng nhân viên; mỗi bảng lương được quản lí duyệt sẽ hiện ngay cho chủ cửa hàng, không có bước gửi tổng hợp riêng.
 - Ca chiều Chủ Nhật luôn bị khóa; giờ mặc định từ lịch là 6 giờ sáng, 5 giờ chiều và 0,5 giờ mở cửa.
 - Báo đồ, báo ca, tổng hợp theo chi nhánh và xuất báo cáo thành ảnh.
 - Dữ liệu vận hành đồng bộ với Supabase Postgres; phiên đăng nhập được duy trì bằng localStorage.

@@ -1,6 +1,19 @@
 export type UserRole = 'owner' | 'manager' | 'employee';
 export type EmploymentType = 'full_time' | 'part_time';
 
+export const storeOwners = [
+  { fullName: 'Nguyễn Thanh Đạm', familiarName: 'anh Đạm' },
+  { fullName: 'Trương Thanh Thảo', familiarName: 'chị Gấu' },
+] as const;
+
+const normalizePersonName = (value: string) =>
+  value.normalize('NFC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('vi-VN');
+
+export const isStoreOwnerName = (value: string) => {
+  const normalizedName = normalizePersonName(value);
+  return storeOwners.some((owner) => normalizePersonName(owner.fullName) === normalizedName);
+};
+
 export type Branch = {
   id: string;
   name: string;

@@ -1,4 +1,5 @@
 import { createClient, type User } from '@supabase/supabase-js';
+import { isStoreOwnerName } from '../src/shared/domain';
 
 type VercelRequest = {
   body?: unknown;
@@ -170,9 +171,16 @@ export default async function handler(request: VercelRequest, response: VercelRe
   }
 
   const requester = requesterRow as ProfileRow;
+  const requesterIsOwner = requester.role === 'owner' && isStoreOwnerName(requester.full_name);
+
+  if (requester.role === 'owner' && !requesterIsOwner) {
+    return send(response, 403, {
+      message: 'Chủ cửa hàng chỉ gồm Nguyễn Thanh Đạm (anh Đạm) và Trương Thanh Thảo (chị Gấu).',
+    });
+  }
 
   if (request.method === 'GET') {
-    if (requester.role !== 'owner' && requester.role !== 'manager') {
+    if (!requesterIsOwner && requester.role !== 'manager') {
       return send(response, 403, { message: 'Chỉ Chủ cửa hàng mới được xem danh sách nhân viên.' });
     }
 
@@ -239,6 +247,11 @@ export default async function handler(request: VercelRequest, response: VercelRe
     if (!fullName) {
       return send(response, 400, { message: 'Vui lòng nhập họ và tên.' });
     }
+    if (requester.role === 'owner' && !isStoreOwnerName(fullName)) {
+      return send(response, 403, {
+        message: 'Chủ cửa hàng chỉ gồm Nguyễn Thanh Đạm (anh Đạm) và Trương Thanh Thảo (chị Gấu).',
+      });
+    }
     if (dateOfBirth && (!isValidDateOnly(dateOfBirth) || dateOfBirth > new Date().toISOString().slice(0, 10))) {
       return send(response, 400, { message: 'Ngày sinh chưa hợp lệ.' });
     }
@@ -271,7 +284,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
   }
 
   if (action === 'save-work') {
-    if (requester.role !== 'owner' && requester.role !== 'manager') {
+    if (!requesterIsOwner && requester.role !== 'manager') {
       return send(response, 403, { message: 'Chỉ Quản lí hoặc Chủ cửa hàng mới được đổi thông tin làm việc.' });
     }
 
@@ -310,6 +323,14 @@ export default async function handler(request: VercelRequest, response: VercelRe
       return send(response, 404, { message: 'Không tìm thấy hồ sơ nhân viên này.' });
     }
     const targetProfile = currentTargetRow as ProfileRow;
+    if (role === 'owner' && !isStoreOwnerName(targetProfile.full_name)) {
+      return send(response, 403, {
+        message: 'Chỉ Nguyễn Thanh Đạm (anh Đạm) và Trương Thanh Thảo (chị Gấu) được giữ vai trò Chủ cửa hàng.',
+      });
+    }
+    if (targetProfile.role === 'owner' && isStoreOwnerName(targetProfile.full_name) && role !== 'owner') {
+      return send(response, 403, { message: 'Hai tài khoản Chủ cửa hàng phải giữ nguyên vai trò.' });
+    }
     if (requester.role === 'manager') {
       if (targetProfile.branch_id !== requester.branch_id || targetProfile.role !== 'employee') {
         return send(response, 403, { message: 'Quản lí chỉ được sửa nhân viên trong chi nhánh của mình.' });

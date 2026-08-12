@@ -16,35 +16,6 @@ import { styles } from './styles';
 const formatNumber = (value: number) =>
   new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 }).format(value);
 
-export function MetricTile({
-  icon: Icon,
-  label,
-  tone,
-  value,
-}: {
-  icon: LucideIcon;
-  label: string;
-  tone: 'teal' | 'amber' | 'blue';
-  value: string;
-}) {
-  const toneStyle = {
-    teal: { backgroundColor: colors.primarySoft, borderColor: colors.lineStrong, color: colors.primary },
-    amber: { backgroundColor: colors.amberSoft, borderColor: '#E2B889', color: colors.amber },
-    blue: { backgroundColor: colors.blueSoft, borderColor: '#B8C7AE', color: colors.blue },
-  }[tone];
-
-  return (
-    <View style={[styles.metricTile, { borderColor: toneStyle.borderColor }]}>
-      <View style={[styles.metricAccent, { backgroundColor: toneStyle.color }]} />
-      <View style={[styles.metricIcon, { backgroundColor: toneStyle.backgroundColor }]}>
-        <Icon color={toneStyle.color} size={18} />
-      </View>
-      <Text style={styles.metricValue}>{value}</Text>
-      <Text style={styles.metricLabel}>{label}</Text>
-    </View>
-  );
-}
-
 export function SectionTitle({
   icon: Icon,
   subtitle,

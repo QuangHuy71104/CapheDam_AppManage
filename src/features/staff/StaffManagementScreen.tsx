@@ -15,6 +15,7 @@ import {
 } from './repository';
 
 import { colors } from '../../shared/ui/theme';
+import { isStoreOwnerName, storeOwners } from '../../shared/domain';
 export type StaffManagementBranch = {
   id: string;
   name: string;
@@ -179,6 +180,13 @@ export function StaffManagementScreen({
 
     if (roleDraft !== 'owner' && !workBranchDraft) {
       setFeedback({ tone: 'error', message: 'Vui lòng chọn nơi làm việc.' });
+      return;
+    }
+    if (roleDraft === 'owner' && !isStoreOwnerName(selectedProfile.fullName)) {
+      setFeedback({
+        tone: 'error',
+        message: 'Chỉ Nguyễn Thanh Đạm (anh Đạm) và Trương Thanh Thảo (chị Gấu) được chọn làm Chủ cửa hàng.',
+      });
       return;
     }
 
@@ -430,6 +438,9 @@ export function StaffManagementScreen({
 
                     <View style={styles.field}>
                       <Text style={styles.fieldLabel}>Vị trí</Text>
+                      <Text style={styles.fieldHint}>
+                        Chủ cửa hàng: {storeOwners.map((owner) => `${owner.fullName} (${owner.familiarName})`).join(' và ')}.
+                      </Text>
                       <select
                         aria-label="Vị trí"
                         disabled={isManager || staffProfile.id === currentProfile.id}
@@ -439,7 +450,7 @@ export function StaffManagementScreen({
                       >
                         <option value="employee">Nhân viên</option>
                         <option value="manager">Quản lí chi nhánh</option>
-                        <option value="owner">Chủ cửa hàng</option>
+                        {isStoreOwnerName(staffProfile.fullName) ? <option value="owner">Chủ cửa hàng</option> : null}
                       </select>
                     </View>
 
@@ -705,6 +716,12 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 11,
     fontWeight: '800',
+  },
+  fieldHint: {
+    color: colors.primary,
+    fontSize: 10,
+    fontWeight: '700',
+    lineHeight: 15,
   },
   filterCard: {
     alignItems: 'center',

@@ -227,3 +227,15 @@ test('legacy staff and schedule modules are compatibility facades', () => {
   assert.equal(existsSync(new URL('../src/features/staff/repository.ts', import.meta.url)), true);
   assert.equal(existsSync(new URL('../src/features/schedule/WorkScheduleScreen.tsx', import.meta.url)), true);
 });
+
+test('role dashboards follow the compact payroll approval flow', () => {
+  const app = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+  const styles = readFileSync(new URL('../src/app/styles.ts', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(app, /<MetricTile/);
+  assert.doesNotMatch(app, /ownerIngredients/);
+  assert.doesNotMatch(app, /Tổng hợp gửi chủ cửa hàng/);
+  assert.match(app, /Bảng lương sẽ xuất hiện ngay sau khi quản lí duyệt cho từng nhân viên/);
+  assert.match(styles, /managerPayrollEmployeeGrid:\s*{[\s\S]*?flexWrap: 'wrap'/);
+  assert.match(styles, /managerPayrollEmployeeCard:\s*{[\s\S]*?width: 'calc\(50% - 4px\)'/);
+});

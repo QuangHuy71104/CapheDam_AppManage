@@ -15,7 +15,6 @@ import {
 } from './lib/web-ui';
 import {
   ArrowRight,
-  Beef,
   Building2,
   CalendarCheck2,
   CalendarDays,
@@ -26,7 +25,6 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
-  ClipboardList,
   Clock3,
   DoorClosed,
   Eye,
@@ -68,8 +66,6 @@ import {
   FormField,
   HistoryList,
   HistoryRow,
-  isToday,
-  MetricTile,
   PrimaryButton,
   SectionTitle,
   TransferSumField,
@@ -86,6 +82,7 @@ import {
 import {
   branches,
   defaultBranchId,
+  isStoreOwnerName,
   payrollPolicy,
   type Branch,
   type EmploymentType,
@@ -120,23 +117,21 @@ import type {
   AttendanceDayEntry,
   AttendanceInputField,
   AttendanceSheet,
-  BranchPayrollConfirmation,
 } from './src/features/attendance/model';
 import { listAttendanceSheets } from './src/features/attendance/repository';
 import {
   calculateBranchPayroll,
   calculatePayroll,
-  getBranchPayrollConfirmation,
   invalidateBranchPayroll,
 } from './src/features/payroll/domain';
-import { autoConfirmDuePayrolls, listBranchPayrollConfirmations } from './src/features/payroll/repository';
+import { listBranchPayrollConfirmations } from './src/features/payroll/repository';
 import { syncPayrollWorkspace } from './src/features/payroll/workspace-sync';
 import {
   initialPayrollWorkspace,
   normalizePayrollWorkspace,
   type PayrollWorkspace,
 } from './src/features/payroll/workspace';
-type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'ownerIngredients' | 'staffManagement' | 'schedule';
+type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'staffManagement' | 'schedule';
 type AppPage = { key: 'main' } | { key: 'managerPayrollEmployee'; employeeId: string };
 type AuthFeedback = {
   tone: 'success' | 'error' | 'info';
@@ -178,13 +173,13 @@ const roleOptions: Array<{ key: UserRole; label: string; description: string; ic
   {
     key: 'manager',
     label: 'Quản lí chi nhánh',
-    description: 'Tổng hợp bảng lương nhân viên và xác nhận gửi chủ cửa hàng.',
+    description: 'Kiểm tra và duyệt bảng lương nhân viên cho chủ cửa hàng xem.',
     icon: UserCog,
   },
   {
     key: 'owner',
     label: 'Chủ cửa hàng',
-    description: 'Xem bảng lương và báo đồ của toàn bộ chi nhánh.',
+    description: 'Xem bảng lương đã được quản lí duyệt của toàn bộ chi nhánh.',
     icon: ShieldCheck,
   },
 ];
@@ -226,7 +221,6 @@ const ownerTabItems: Array<{
   icon: typeof Clock3;
 }> = [
   { key: 'ownerPayroll', label: 'Bảng lương', icon: WalletCards },
-  { key: 'ownerIngredients', label: 'Báo đồ', icon: ClipboardList },
   { key: 'staffManagement', label: 'Nhân sự', icon: UsersRound },
 ];
 
@@ -359,20 +353,9 @@ const getWeekdayLabel = (monthKey: string, day: number) => {
 const isCurrentMonth = (monthKey: string) => monthKey === getMonthKey();
 const isFutureMonth = (monthKey: string) => monthKey > getMonthKey();
 
-const getMonthCutoffDate = (monthKey: string, dayOffsetFromEnd: number) => {
-  const { month, year } = parseMonthKey(monthKey);
-  const lastDay = new Date(year, month, 0).getDate();
-
-  return new Date(year, month - 1, lastDay - dayOffsetFromEnd);
-};
-
-const isManagerCancelLocked = (monthKey: string, now = new Date()) => now >= getMonthCutoffDate(monthKey, 0);
-
 const getBranchById = (branchId: string) => branches.find((branch) => branch.id === branchId) ?? branches[0];
 
 const getReportBranchId = (report: { branchId?: string }) => report.branchId ?? defaultBranchId;
-
-const isReportInMonth = (timestamp: string, monthKey: string) => getMonthKey(new Date(timestamp)) === monthKey;
 
 const createEmptyAttendanceSheet = (
   branchId: string,
@@ -511,7 +494,9 @@ const applySelfProfileOverrides = async (profile: UserProfile, user: User) => {
 };
 
 const mapProfileRow = (row: Record<string, unknown>, user: User): UserProfile => {
-  const role = normalizeRole(row.role);
+  const fullName = typeof row.full_name === 'string' ? row.full_name : '';
+  const storedRole = normalizeRole(row.role);
+  const role = storedRole === 'owner' && !isStoreOwnerName(fullName) ? 'employee' : storedRole;
   const branchId = normalizeBranchId(role, row.branch_id);
   const normalizedEmail = typeof row.email === 'string' && row.email ? normalizeEmailAddress(row.email) : '';
   const getMoneyValue = (value: unknown, fallback: number) => {
@@ -522,7 +507,7 @@ const mapProfileRow = (row: Record<string, unknown>, user: User): UserProfile =>
   return {
     id: typeof row.id === 'string' && row.id ? row.id : user.id,
     email: normalizedEmail || normalizeEmailAddress(user.email ?? ''),
-    fullName: typeof row.full_name === 'string' ? row.full_name : '',
+    fullName,
     role,
     branchId,
     phone: typeof row.phone === 'string' ? row.phone : '',
@@ -556,7 +541,15 @@ const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | n
   const draftMatchesUser = signupDraft?.email === normalizedUserEmail;
   const metadata = user.user_metadata as Record<string, unknown> | undefined;
   const metadataRole = normalizeRole(metadata?.role);
-  const fallbackRole = draftMatchesUser ? signupDraft.role : metadataRole;
+  const fallbackFullName = draftMatchesUser
+    ? signupDraft.fullName
+    : typeof metadata?.fullName === 'string'
+      ? metadata.fullName
+      : '';
+  const requestedFallbackRole = draftMatchesUser ? signupDraft.role : metadataRole;
+  const fallbackRole = requestedFallbackRole === 'owner' && !isStoreOwnerName(fallbackFullName)
+    ? 'employee'
+    : requestedFallbackRole;
   const fallbackEmail = normalizedUserEmail || signupDraft?.email || '';
 
   if (!fallbackEmail) {
@@ -566,12 +559,7 @@ const fetchUserProfile = async (user: User, signupDraft?: PendingSignupDraft | n
   const fallbackProfile: UserProfile = {
     id: user.id,
     email: fallbackEmail,
-    fullName:
-      draftMatchesUser
-        ? signupDraft.fullName
-        : typeof metadata?.fullName === 'string'
-          ? metadata.fullName
-          : '',
+    fullName: fallbackFullName,
     role: fallbackRole,
     branchId: draftMatchesUser
       ? signupDraft.branchId
@@ -1797,28 +1785,6 @@ export default function App() {
     setPage({ key: 'main' });
   }, [activeTab, currentRole, selectedBranchId]);
 
-  useEffect(() => {
-    if (!loaded || !profile || !remoteReady || currentRole === 'employee') {
-      return;
-    }
-
-    let cancelled = false;
-    void autoConfirmDuePayrolls()
-      .then((confirmed) => {
-        if (!cancelled && confirmed.length > 0) {
-          void refreshRemoteData();
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setSyncError(getFriendlyErrorMessage(error, 'Chưa kiểm tra được trạng thái tự chốt lương.'));
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [currentRole, loaded, profile, refreshRemoteData, remoteReady]);
-
   const tabItems = getTabItemsForRole(currentRole);
   const activeBranch = getBranchById(selectedBranchId);
   const trimmedEmployeeName = employeeName.trim();
@@ -1827,40 +1793,13 @@ export default function App() {
   const branchSheetsForMonth = data.attendanceSheets.filter(
     (sheet) => sheet.branchId === selectedBranchId && sheet.monthKey === selectedMonthKey,
   );
-  const managerApprovedBranchSheets = branchSheetsForMonth.filter((sheet) => sheet.managerApprovedAt);
-  const branchPayrollConfirmation = getBranchPayrollConfirmation(
-    data.branchPayrolls,
-    selectedBranchId,
-    selectedMonthKey,
-  );
   const selectedBranchIngredients = ingredientReports.filter(
     (report) => getReportBranchId(report) === selectedBranchId,
   );
   const selectedBranchClosings = closingReports.filter((report) => getReportBranchId(report) === selectedBranchId);
-  const selectedBranchIngredientsThisMonth = selectedBranchIngredients.filter((report) =>
-    isReportInMonth(report.timestamp, selectedMonthKey),
-  );
-  const confirmedOwnerBranches = branches.filter((branch) =>
-    getBranchPayrollConfirmation(data.branchPayrolls, branch.id, selectedMonthKey)?.managerConfirmedAt,
-  ).length;
   const employeeSheet = signedEmployeeName
     ? getAttendanceSheet(data.attendanceSheets, selectedBranchId, signedEmployeeName, selectedMonthKey, profile?.id)
     : undefined;
-  const employeePayroll = calculatePayroll(employeeSheet);
-  const attendanceMetric =
-    currentRole === 'owner'
-      ? confirmedOwnerBranches
-      : currentRole === 'manager'
-        ? managerApprovedBranchSheets.length
-        : employeePayroll.totalHours;
-  const ingredientMetric =
-    currentRole === 'owner'
-      ? selectedBranchIngredientsThisMonth.length
-      : selectedBranchIngredients.filter((report) => isToday(report.timestamp)).length;
-  const closingMetric =
-    currentRole === 'owner'
-      ? branches.length
-      : selectedBranchClosings.filter((report) => isToday(report.timestamp)).length;
 
   const updateAttendanceCell = (
     employee: string,
@@ -2067,14 +2006,6 @@ export default function App() {
       return;
     }
 
-    if (branchPayrollConfirmation?.managerConfirmedAt) {
-      Alert.alert(
-        'Bảng lương chi nhánh đã gửi',
-        'Quản lí cần hủy xác nhận gửi Chủ cửa hàng trước khi bạn có thể mở lại bảng công.',
-      );
-      return;
-    }
-
     const currentSheet = getAttendanceSheet(data.attendanceSheets, selectedBranchId, trimmedName, selectedMonthKey, profile?.id);
     if (currentSheet?.managerApprovedAt) {
       Alert.alert('Bảng lương đã được duyệt', 'Chỉ quản lí mới có thể mở lại bảng công này để chỉnh sửa.');
@@ -2150,59 +2081,6 @@ export default function App() {
 
   const publishSchedule = (publishedSchedule: PublishedWorkSchedule) => {
     setData((current) => applyPublishedScheduleToAttendance(current, publishedSchedule));
-  };
-
-  const confirmBranchPayroll = () => {
-    if (managerApprovedBranchSheets.length === 0) {
-      Alert.alert('Chưa có bảng lương đã duyệt', 'Quản lí cần duyệt ít nhất một bảng lương nhân viên trước khi gửi chủ cửa hàng.');
-      return;
-    }
-
-    setData((current) => {
-      const existingIndex = current.branchPayrolls.findIndex(
-        (confirmation) => confirmation.branchId === selectedBranchId && confirmation.monthKey === selectedMonthKey,
-      );
-      const nextConfirmation: BranchPayrollConfirmation = {
-        id: existingIndex >= 0 ? current.branchPayrolls[existingIndex].id : createId(),
-        branchId: selectedBranchId,
-        monthKey: selectedMonthKey,
-        managerConfirmedAt: new Date().toISOString(),
-        managerName: signedEmployeeName || 'Quản lí chi nhánh',
-        autoConfirmed: false,
-      };
-      const branchPayrolls =
-        existingIndex >= 0
-          ? current.branchPayrolls.map((confirmation, index) =>
-              index === existingIndex ? nextConfirmation : confirmation,
-            )
-          : [nextConfirmation, ...current.branchPayrolls];
-
-      return {
-        ...current,
-        branchPayrolls,
-      };
-    });
-  };
-
-  const cancelBranchPayroll = () => {
-    if (isManagerCancelLocked(selectedMonthKey)) {
-      Alert.alert('Không thể hủy xác nhận', 'Từ ngày cuối cùng của tháng, bảng lương chi nhánh đã khóa gửi chủ cửa hàng.');
-      return;
-    }
-
-    setData((current) => ({
-      ...current,
-      branchPayrolls: current.branchPayrolls.map((confirmation) =>
-        confirmation.branchId === selectedBranchId && confirmation.monthKey === selectedMonthKey
-          ? {
-              ...confirmation,
-              managerConfirmedAt: undefined,
-              managerCancelledAt: new Date().toISOString(),
-              autoConfirmed: false,
-            }
-          : confirmation,
-      ),
-    }));
   };
 
   const saveIngredientReport = async () => {
@@ -2501,39 +2379,14 @@ export default function App() {
 
             {page.key === 'main' ? (
               <>
-            {currentRole === 'employee' ? null : (
-              <View style={styles.metricsRow}>
-                <MetricTile
-                  icon={CalendarCheck2}
-                  label={currentRole === 'owner' ? 'Đã nhận lương' : 'NV đã duyệt'}
-                  value={formatNumber(attendanceMetric)}
-                  tone="teal"
-                />
-                <MetricTile icon={Beef} label="Báo đồ" value={ingredientMetric.toString()} tone="amber" />
-                <MetricTile
-                  icon={currentRole === 'owner' ? Building2 : WalletCards}
-                  label={currentRole === 'owner' ? 'Chi nhánh' : 'Báo ca'}
-                  value={closingMetric.toString()}
-                  tone="blue"
-                />
-              </View>
-            )}
-
             {activeTab === 'attendance' && (
               currentRole === 'manager' ? (
                 <ManagerPayrollScreen
                   branch={activeBranch}
-                  branchPayroll={branchPayrollConfirmation}
                   managerId={profile.id}
                   monthKey={selectedMonthKey}
-                  onCancelBranchPayroll={cancelBranchPayroll}
-                  onReopenEmployeePayroll={reopenEmployeePayroll}
-                  onConfirmBranchPayroll={confirmBranchPayroll}
-                  onApproveEmployeePayroll={approveEmployeePayroll}
                   onOpenEmployeePayroll={(employeeId) => setPage({ key: 'managerPayrollEmployee', employeeId })}
                   onMonthChange={setSelectedMonthKey}
-                  onPasteGrid={pasteAttendanceGrid}
-                  onUpdateCell={updateAttendanceCell}
                   sheets={branchSheetsForMonth}
                 />
               ) : (
@@ -2622,21 +2475,10 @@ export default function App() {
             {activeTab === 'ownerPayroll' && (
               <OwnerPayrollScreen
                 branchId={selectedBranchId}
-                branchPayrolls={data.branchPayrolls}
                 monthKey={selectedMonthKey}
                 onBranchChange={setSelectedBranchId}
                 onMonthChange={setSelectedMonthKey}
                 sheets={data.attendanceSheets}
-              />
-            )}
-
-            {activeTab === 'ownerIngredients' && (
-              <OwnerIngredientReportsScreen
-                branchId={selectedBranchId}
-                monthKey={selectedMonthKey}
-                onBranchChange={setSelectedBranchId}
-                onMonthChange={setSelectedMonthKey}
-                records={ingredientReports}
               />
             )}
 
@@ -4278,36 +4120,21 @@ function EmployeeAttendanceScreen({
 
 function ManagerPayrollScreen({
   branch,
-  branchPayroll,
   managerId,
   monthKey,
-  onApproveEmployeePayroll,
-  onCancelBranchPayroll,
-  onConfirmBranchPayroll,
   onMonthChange,
   onOpenEmployeePayroll,
-  onPasteGrid,
-  onReopenEmployeePayroll,
-  onUpdateCell,
   sheets,
 }: {
   branch: Branch;
-  branchPayroll?: BranchPayrollConfirmation;
   managerId: string;
   monthKey: string;
-  onApproveEmployeePayroll: (employeeName: string, userId: string) => void;
-  onCancelBranchPayroll: () => void;
-  onConfirmBranchPayroll: () => void;
   onMonthChange: (value: string) => void;
   onOpenEmployeePayroll: (employeeId: string) => void;
-  onPasteGrid: (employeeName: string, startDay: number, startField: AttendanceInputField, pastedText: string, userId?: string) => void;
-  onReopenEmployeePayroll: (employeeName: string, userId: string) => void;
-  onUpdateCell: (employeeName: string, dayKey: string, field: AttendanceInputField, value: string, userId?: string) => void;
   sheets: AttendanceSheet[];
 }) {
   const [staff, setStaff] = useState<ManagedStaffProfile[]>([]);
   const [aliases, setAliases] = useState<StaffBranchAlias[]>([]);
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string | null>(null);
   const [loadingStaff, setLoadingStaff] = useState(true);
   const [staffError, setStaffError] = useState<string | null>(null);
 
@@ -4340,14 +4167,6 @@ function ManagerPayrollScreen({
         }),
     [aliases, branch.id, managerId, staff],
   );
-
-  const approvedSheets = sheets.filter((sheet) => sheet.managerApprovedAt);
-  const selectedEmployee = branchEmployees.find((person) => person.id === selectedEmployeeId);
-  const selectedSheet = selectedEmployee
-    ? getAttendanceSheet(sheets, branch.id, selectedEmployee.fullName, monthKey, selectedEmployee.id)
-    : undefined;
-  const aggregate = calculateBranchPayroll(approvedSheets);
-  const locked = isManagerCancelLocked(monthKey);
 
   return (
     <View style={styles.screen}>
@@ -4385,6 +4204,7 @@ function ManagerPayrollScreen({
               const status = sheet?.managerApprovedAt ? 'Đã duyệt' : payroll.totalHours > 0 ? 'Chờ duyệt' : 'Chưa có lịch';
               return (
                 <Pressable
+                  accessibilityLabel={`Mở bảng lương ${displayName}`}
                   accessibilityRole="button"
                   key={employee.id}
                   onPress={() => onOpenEmployeePayroll(employee.id)}
@@ -4396,7 +4216,6 @@ function ManagerPayrollScreen({
                       {formatNumber(payroll.totalHours)} giờ · {status}
                     </Text>
                   </View>
-                  <ChevronRight color={colors.muted} size={18} />
                 </Pressable>
               );
             })}
@@ -4404,81 +4223,6 @@ function ManagerPayrollScreen({
         )}
       </View>
 
-      {selectedEmployee ? (
-        <View style={styles.managerPayrollDetail}>
-          <View style={styles.managerPayrollDetailHeading}>
-            <View style={styles.flex}>
-              <Text style={styles.managerPayrollDetailEyebrow}>BẢNG LƯƠNG NHÂN VIÊN</Text>
-              <Text style={styles.managerPayrollDetailName}>{getStaffDisplayName(selectedEmployee, aliases, managerId, branch.id)}</Text>
-              <Text style={styles.managerPayrollDetailHint}>Quản lí có thể sửa trực tiếp các giờ công, kể cả ở tháng trước.</Text>
-            </View>
-            <Pressable accessibilityLabel="Đóng bảng lương nhân viên" onPress={() => setSelectedEmployeeId(null)} style={styles.managerPayrollClose}>
-              <X color={colors.muted} size={18} />
-            </Pressable>
-          </View>
-          <AttendanceSheetTableV2
-            editable={!isFutureMonth(monthKey)}
-            employeeName={selectedEmployee.fullName}
-            monthKey={monthKey}
-            onPasteGrid={onPasteGrid}
-            onUpdateCell={onUpdateCell}
-            sheet={selectedSheet}
-            targetUserId={selectedEmployee.id}
-          />
-          <PayrollSummary payroll={calculatePayroll(selectedSheet)} />
-          {selectedSheet?.managerApprovedAt ? (
-            <>
-              <StatusPanel
-                icon={CheckCircle2}
-                title="Đã duyệt bảng lương nhân viên"
-                text={`${selectedSheet.managerApprovedBy ?? 'Quản lí'} duyệt lúc ${formatDateTime(selectedSheet.managerApprovedAt)}.`}
-                tone="success"
-              />
-              <PrimaryButton
-                icon={XCircle}
-                label="Mở lại để chỉnh sửa"
-                onPress={() => onReopenEmployeePayroll(selectedEmployee.fullName, selectedEmployee.id)}
-                tone="danger"
-              />
-            </>
-          ) : (
-            <PrimaryButton
-              icon={CheckCheck}
-              label="Duyệt bảng lương nhân viên"
-              onPress={() => onApproveEmployeePayroll(selectedEmployee.fullName, selectedEmployee.id)}
-              tone="primary"
-            />
-          )}
-        </View>
-      ) : null}
-
-      <View style={styles.managerPanel}>
-        <SectionTitle icon={ClipboardCheck} title="Tổng hợp gửi chủ cửa hàng" subtitle="Chỉ bao gồm các bảng lương đã được quản lí duyệt" />
-        <PayrollAggregateSummary aggregate={aggregate} />
-        {branchPayroll?.managerConfirmedAt ? (
-          <>
-            <StatusPanel
-              icon={branchPayroll.autoConfirmed ? CalendarCheck2 : CheckCircle2}
-              title={branchPayroll.autoConfirmed ? 'Hệ thống đã tự xác nhận' : 'Đã gửi chủ cửa hàng'}
-              text={`${branchPayroll.managerName ?? 'Quản lí'} xác nhận lúc ${formatDateTime(branchPayroll.managerConfirmedAt)}.`}
-              tone="success"
-            />
-            <PrimaryButton
-              icon={XCircle}
-              label={locked ? 'Đã khóa hủy xác nhận' : 'Hủy xác nhận để chỉnh sửa'}
-              onPress={onCancelBranchPayroll}
-              tone="danger"
-            />
-          </>
-        ) : (
-          <PrimaryButton
-            icon={ShieldCheck}
-            label={`Gửi ${approvedSheets.length} bảng lương đã duyệt`}
-            onPress={onConfirmBranchPayroll}
-            tone="primary"
-          />
-        )}
-      </View>
     </View>
   );
 }
@@ -4766,26 +4510,27 @@ function StatusPanel({
 
 function OwnerPayrollScreen({
   branchId,
-  branchPayrolls,
   monthKey,
   onBranchChange,
   onMonthChange,
   sheets,
 }: {
   branchId: string;
-  branchPayrolls: BranchPayrollConfirmation[];
   monthKey: string;
   onBranchChange: (value: string) => void;
   onMonthChange: (value: string) => void;
   sheets: AttendanceSheet[];
 }) {
   const selectedBranch = getBranchById(branchId);
-  const branchPayroll = getBranchPayrollConfirmation(branchPayrolls, branchId, monthKey);
   const confirmedSheets = sheets.filter(
     (sheet) => sheet.branchId === branchId && sheet.monthKey === monthKey && sheet.managerApprovedAt,
   );
   const aggregate = calculateBranchPayroll(confirmedSheets);
-  const received = Boolean(branchPayroll?.managerConfirmedAt);
+  const received = confirmedSheets.length > 0;
+  const latestApproval = confirmedSheets.reduce<string | undefined>((latest, sheet) => {
+    if (!sheet.managerApprovedAt) return latest;
+    return !latest || sheet.managerApprovedAt > latest ? sheet.managerApprovedAt : latest;
+  }, undefined);
 
   return (
     <View style={styles.screen}>
@@ -4794,10 +4539,12 @@ function OwnerPayrollScreen({
       <OwnerBranchList
         branchId={branchId}
         getMeta={(branch) => {
-          const confirmation = getBranchPayrollConfirmation(branchPayrolls, branch.id, monthKey);
+          const approvedCount = sheets.filter(
+            (sheet) => sheet.branchId === branch.id && sheet.monthKey === monthKey && sheet.managerApprovedAt,
+          ).length;
 
-          return confirmation?.managerConfirmedAt
-            ? `Đã nhận ${confirmation.autoConfirmed ? 'tự động' : 'từ quản lí'}`
+          return approvedCount > 0
+            ? `Đã nhận ${approvedCount} bảng lương đã duyệt`
             : 'Chưa nhận bảng lương';
         }}
         onBranchChange={onBranchChange}
@@ -4809,8 +4556,8 @@ function OwnerPayrollScreen({
           <>
             <StatusPanel
               icon={CheckCircle2}
-              title="Bảng lương đã sẵn sàng"
-              text={`Nhận lúc ${formatDateTime(branchPayroll?.managerConfirmedAt ?? new Date().toISOString())}.`}
+              title="Đã nhận bảng lương được duyệt"
+              text={`Bảng lương mới nhất được quản lí duyệt lúc ${formatDateTime(latestApproval ?? new Date().toISOString())}.`}
               tone="success"
             />
             <PayrollAggregateSummary aggregate={aggregate} />
@@ -4833,59 +4580,11 @@ function OwnerPayrollScreen({
           <StatusPanel
             icon={Clock3}
             title="Chưa nhận bảng lương"
-            text="Chủ cửa hàng chỉ thấy bảng lương sau khi quản lí chi nhánh xác nhận hoặc hệ thống tự xác nhận trước ngày cuối tháng một ngày."
+            text="Bảng lương sẽ xuất hiện ngay sau khi quản lí duyệt cho từng nhân viên."
             tone="neutral"
           />
         )}
       </View>
-    </View>
-  );
-}
-
-function OwnerIngredientReportsScreen({
-  branchId,
-  monthKey,
-  onBranchChange,
-  onMonthChange,
-  records,
-}: {
-  branchId: string;
-  monthKey: string;
-  onBranchChange: (value: string) => void;
-  onMonthChange: (value: string) => void;
-  records: IngredientReport[];
-}) {
-  const selectedBranch = getBranchById(branchId);
-  const branchRecords = records.filter(
-    (report) => getReportBranchId(report) === branchId && isReportInMonth(report.timestamp, monthKey),
-  );
-
-  return (
-    <View style={styles.screen}>
-      <SectionTitle icon={ClipboardList} title="Báo đồ chi nhánh" subtitle="Chủ cửa hàng xem báo đồ theo chi nhánh" />
-      <MonthNavigator monthKey={monthKey} onChange={onMonthChange} />
-      <OwnerBranchList
-        branchId={branchId}
-        getMeta={(branch) => {
-          const count = records.filter(
-            (report) => getReportBranchId(report) === branch.id && isReportInMonth(report.timestamp, monthKey),
-          ).length;
-
-          return `${count} báo đồ trong tháng`;
-        }}
-        onBranchChange={onBranchChange}
-      />
-
-      <HistoryList emptyText="Chi nhánh này chưa có báo đồ trong tháng đã chọn." icon={ClipboardList} title={selectedBranch.name}>
-        {branchRecords.slice(0, 20).map((report) => (
-          <HistoryRow
-            key={report.id}
-            meta={`${formatDateTime(report.timestamp)}${report.reporterName ? ` - ${report.reporterName}` : ''}`}
-            title={report.items?.length ? 'Báo đồ' : report.itemName ?? 'Báo đồ'}
-            value={formatSupplyReportSummary(report)}
-          />
-        ))}
-      </HistoryList>
     </View>
   );
 }
@@ -4939,23 +4638,6 @@ const formatSupplyItemValue = (item: SupplyReportItem) => {
   const baseText = quantityText ? `${item.label}: ${quantityText} ${item.unit}` : `${item.label}: chưa nhập`;
 
   return item.status === 'empty' ? `${baseText} - hết` : baseText;
-};
-
-const formatSupplyReportSummary = (report: IngredientReport) => {
-  if (report.items?.length) {
-    const filledItems = report.items.filter((item) => item.status === 'empty' || item.quantity.trim());
-
-    if (filledItems.length === 0) {
-      return 'Chưa nhập số lượng, tất cả trạng thái còn';
-    }
-
-    const summary = filledItems.slice(0, 4).map(formatSupplyItemValue).join(' - ');
-    const remainingCount = filledItems.length - 4;
-
-    return remainingCount > 0 ? `${summary} - thêm ${remainingCount} món` : summary;
-  }
-
-  return `Dùng ${formatNumber(report.used ?? 0)} ${report.unit ?? ''} - tồn ${formatNumber(report.currentStock ?? 0)} ${report.unit ?? ''}`;
 };
 
 const buildSupplyShareText = (branch: Branch, report: IngredientReport) => {
