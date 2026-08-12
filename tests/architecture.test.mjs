@@ -236,8 +236,12 @@ test('role dashboards follow the compact payroll approval flow', () => {
   assert.doesNotMatch(app, /ownerIngredients/);
   assert.doesNotMatch(app, /Tổng hợp gửi chủ cửa hàng/);
   assert.match(app, /Bảng lương sẽ xuất hiện ngay sau khi quản lí duyệt cho từng nhân viên/);
+  assert.match(app, /Duyệt và gửi Chủ cửa hàng/);
+  assert.match(app, /approved \? styles\.managerPayrollEmployeeCardApproved : styles\.managerPayrollEmployeeCardPending/);
   assert.match(styles, /managerPayrollEmployeeGrid:\s*{[\s\S]*?flexWrap: 'wrap'/);
   assert.match(styles, /managerPayrollEmployeeCard:\s*{[\s\S]*?width: 'calc\(50% - 4px\)'/);
+  assert.match(styles, /managerPayrollEmployeeCardPending:\s*{[\s\S]*?backgroundColor: '#E6E3DF'/);
+  assert.match(styles, /managerPayrollEmployeeCardApproved:\s*{[\s\S]*?backgroundColor: colors\.blue/);
 });
 
 test('serverless staff APIs remain self-contained at runtime', () => {

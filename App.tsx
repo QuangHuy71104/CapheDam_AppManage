@@ -4175,7 +4175,7 @@ function ManagerPayrollScreen({
       <StatusPanel
         icon={CalendarCheck2}
         title="Lịch làm tự lên bảng công"
-        text="Sau khi gửi lịch, quản lí chỉ cần kiểm tra, chỉnh số giờ khi cần rồi duyệt bảng lương của từng nhân viên. Có thể xem và sửa các tháng trước."
+        text="Sau khi kiểm tra, quản lí duyệt bảng lương của từng nhân viên và Chủ cửa hàng sẽ nhận được ngay. Có thể xem và sửa các tháng trước."
         tone="success"
       />
 
@@ -4201,18 +4201,23 @@ function ManagerPayrollScreen({
               const sheet = getAttendanceSheet(sheets, branch.id, employee.fullName, monthKey, employee.id);
               const payroll = calculatePayroll(sheet);
               const displayName = getStaffDisplayName(employee, aliases, managerId, branch.id);
-              const status = sheet?.managerApprovedAt ? 'Đã duyệt' : payroll.totalHours > 0 ? 'Chờ duyệt' : 'Chưa có lịch';
+              const approved = Boolean(sheet?.managerApprovedAt);
+              const status = approved ? 'Đã duyệt' : payroll.totalHours > 0 ? 'Đợi duyệt' : 'Chưa có lịch';
               return (
                 <Pressable
-                  accessibilityLabel={`Mở bảng lương ${displayName}`}
+                  accessibilityLabel={`Mở bảng lương ${displayName} · ${status}`}
                   accessibilityRole="button"
                   key={employee.id}
                   onPress={() => onOpenEmployeePayroll(employee.id)}
-                  style={({ pressed }) => [styles.managerPayrollEmployeeCard, pressed && styles.pressed]}
+                  style={({ pressed }) => [
+                    styles.managerPayrollEmployeeCard,
+                    approved ? styles.managerPayrollEmployeeCardApproved : styles.managerPayrollEmployeeCardPending,
+                    pressed && styles.pressed,
+                  ]}
                 >
                   <View style={styles.flex}>
-                    <Text style={styles.managerPayrollEmployeeName}>{displayName}</Text>
-                    <Text style={styles.managerPayrollEmployeeMeta}>
+                    <Text style={[styles.managerPayrollEmployeeName, approved && styles.managerPayrollEmployeeNameApproved]}>{displayName}</Text>
+                    <Text style={[styles.managerPayrollEmployeeMeta, approved && styles.managerPayrollEmployeeMetaApproved]}>
                       {formatNumber(payroll.totalHours)} giờ · {status}
                     </Text>
                   </View>
@@ -4324,7 +4329,7 @@ function ManagerEmployeePayrollPage({
               <StatusPanel
                 icon={CheckCircle2}
                 title="Đã duyệt bảng lương nhân viên"
-                text={`${sheet.managerApprovedBy ?? 'Quản lí'} duyệt lúc ${formatDateTime(sheet.managerApprovedAt)}.`}
+                text={`${sheet.managerApprovedBy ?? 'Quản lí'} duyệt lúc ${formatDateTime(sheet.managerApprovedAt)}. Chủ cửa hàng đã nhận được bảng lương này.`}
                 tone="success"
               />
               <PrimaryButton
@@ -4337,7 +4342,7 @@ function ManagerEmployeePayrollPage({
           ) : (
             <PrimaryButton
               icon={CheckCheck}
-              label="Duyệt bảng lương nhân viên"
+              label="Duyệt và gửi Chủ cửa hàng"
               onPress={() => onApproveEmployeePayroll(employee.fullName, employee.id)}
               tone="primary"
             />

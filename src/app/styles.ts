@@ -2090,8 +2090,6 @@ export const styles = StyleSheet.create({
   },
   managerPayrollEmployeeCard: {
     alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderColor: colors.lineStrong,
     borderRadius: 12,
     borderWidth: 1,
     justifyContent: 'center',
@@ -2102,6 +2100,14 @@ export const styles = StyleSheet.create({
     textAlign: 'left',
     width: 'calc(50% - 4px)',
   },
+  managerPayrollEmployeeCardPending: {
+    backgroundColor: '#E6E3DF',
+    borderColor: '#C9C3BC',
+  },
+  managerPayrollEmployeeCardApproved: {
+    backgroundColor: colors.blue,
+    borderColor: colors.blue,
+  },
   managerPayrollEmployeeCardSelected: {
     backgroundColor: colors.primary,
     borderColor: colors.primary,
@@ -2111,6 +2117,9 @@ export const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '900',
   },
+  managerPayrollEmployeeNameApproved: {
+    color: colors.onDark,
+  },
   managerPayrollEmployeeNameSelected: {
     color: colors.onDark,
   },
@@ -2119,6 +2128,9 @@ export const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
     marginTop: 2,
+  },
+  managerPayrollEmployeeMetaApproved: {
+    color: 'rgba(255, 248, 238, 0.82)',
   },
   managerPayrollEmployeeMetaSelected: {
     color: 'rgba(255, 248, 238, 0.74)',
