@@ -252,3 +252,12 @@ test('serverless staff APIs remain self-contained at runtime', () => {
   assert.doesNotMatch(demoSeedApi, /from ['"]\.\.\/src\//);
   assert.match(accountApi, /requester\.role !== 'owner' && requester\.role !== 'manager'/);
 });
+
+test('inventory reporting uses two columns without recent-report history', () => {
+  const ingredientScreen = readFileSync(new URL('../src/features/inventory/IngredientScreen.tsx', import.meta.url), 'utf8');
+  const styles = readFileSync(new URL('../src/app/styles.ts', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(ingredientScreen, /Báo đồ gần đây/);
+  assert.doesNotMatch(ingredientScreen, /HistoryList|HistoryRow/);
+  assert.match(styles, /supplyGrid:\s*{[\s\S]*?gridTemplateColumns: 'repeat\(2, minmax\(0, 1fr\)\)'/);
+});

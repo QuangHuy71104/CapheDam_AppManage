@@ -2331,7 +2331,7 @@ export const styles = StyleSheet.create({
   supplyGrid: {
     display: 'grid',
     gap: 9,
-    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
   },
   supplyItemRow: {
     backgroundColor: colors.surface,

@@ -1236,7 +1236,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('attendance');
   const [page, setPage] = useState<AppPage>({ key: 'main' });
   const [data, setData] = useState<PayrollWorkspace>(initialPayrollWorkspace);
-  const [ingredientReports, setIngredientReports] = useState<IngredientReport[]>([]);
+  const [, setIngredientReports] = useState<IngredientReport[]>([]);
   const [closingReports, setClosingReports] = useState<ShiftCloseReport[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [authLoaded, setAuthLoaded] = useState(false);
@@ -1792,9 +1792,6 @@ export default function App() {
     trimmedEmployeeName || (currentRole === 'manager' ? `Quản lí ${activeBranch.area}` : '');
   const branchSheetsForMonth = data.attendanceSheets.filter(
     (sheet) => sheet.branchId === selectedBranchId && sheet.monthKey === selectedMonthKey,
-  );
-  const selectedBranchIngredients = ingredientReports.filter(
-    (report) => getReportBranchId(report) === selectedBranchId,
   );
   const selectedBranchClosings = closingReports.filter((report) => getReportBranchId(report) === selectedBranchId);
   const employeeSheet = signedEmployeeName
@@ -2411,7 +2408,6 @@ export default function App() {
                 note={ingredientNote}
                 onNoteChange={setIngredientNote}
                 onSave={saveIngredientReport}
-                records={selectedBranchIngredients}
                 rows={supplyRows}
                 onRowChange={(key, patch) => {
                   setSupplyRows((current) => ({
