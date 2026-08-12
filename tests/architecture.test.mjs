@@ -239,3 +239,12 @@ test('role dashboards follow the compact payroll approval flow', () => {
   assert.match(styles, /managerPayrollEmployeeGrid:\s*{[\s\S]*?flexWrap: 'wrap'/);
   assert.match(styles, /managerPayrollEmployeeCard:\s*{[\s\S]*?width: 'calc\(50% - 4px\)'/);
 });
+
+test('serverless staff APIs remain self-contained at runtime', () => {
+  const accountApi = readFileSync(new URL('../api/account.ts', import.meta.url), 'utf8');
+  const demoSeedApi = readFileSync(new URL('../api/demo-seed.ts', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(accountApi, /from ['"]\.\.\/src\//);
+  assert.doesNotMatch(demoSeedApi, /from ['"]\.\.\/src\//);
+  assert.match(accountApi, /requester\.role !== 'owner' && requester\.role !== 'manager'/);
+});

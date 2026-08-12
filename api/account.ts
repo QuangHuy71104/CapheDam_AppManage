@@ -1,5 +1,4 @@
 import { createClient, type User } from '@supabase/supabase-js';
-import { isStoreOwnerName } from '../src/shared/domain';
 
 type VercelRequest = {
   body?: unknown;
@@ -71,6 +70,15 @@ const profileFields = 'id,email,full_name,role,branch_id,phone,avatar_url,employ
 const defaultHourlyRate = 24000;
 const defaultAllowance = 200000;
 const defaultBreakfastAllowance = 27000;
+const storeOwnerNames = ['Nguyễn Thanh Đạm', 'Trương Thanh Thảo'] as const;
+
+const normalizePersonName = (value: string) =>
+  value.normalize('NFC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('vi-VN');
+
+const isStoreOwnerName = (value: string) => {
+  const normalizedName = normalizePersonName(value);
+  return storeOwnerNames.some((ownerName) => normalizePersonName(ownerName) === normalizedName);
+};
 
 const send = (response: VercelResponse, status: number, body: Record<string, unknown>) =>
   response.status(status).json(body);
@@ -171,16 +179,9 @@ export default async function handler(request: VercelRequest, response: VercelRe
   }
 
   const requester = requesterRow as ProfileRow;
-  const requesterIsOwner = requester.role === 'owner' && isStoreOwnerName(requester.full_name);
-
-  if (requester.role === 'owner' && !requesterIsOwner) {
-    return send(response, 403, {
-      message: 'Chủ cửa hàng chỉ gồm Nguyễn Thanh Đạm (anh Đạm) và Trương Thanh Thảo (chị Gấu).',
-    });
-  }
 
   if (request.method === 'GET') {
-    if (!requesterIsOwner && requester.role !== 'manager') {
+    if (requester.role !== 'owner' && requester.role !== 'manager') {
       return send(response, 403, { message: 'Chỉ Chủ cửa hàng mới được xem danh sách nhân viên.' });
     }
 
@@ -247,11 +248,6 @@ export default async function handler(request: VercelRequest, response: VercelRe
     if (!fullName) {
       return send(response, 400, { message: 'Vui lòng nhập họ và tên.' });
     }
-    if (requester.role === 'owner' && !isStoreOwnerName(fullName)) {
-      return send(response, 403, {
-        message: 'Chủ cửa hàng chỉ gồm Nguyễn Thanh Đạm (anh Đạm) và Trương Thanh Thảo (chị Gấu).',
-      });
-    }
     if (dateOfBirth && (!isValidDateOnly(dateOfBirth) || dateOfBirth > new Date().toISOString().slice(0, 10))) {
       return send(response, 400, { message: 'Ngày sinh chưa hợp lệ.' });
     }
@@ -284,7 +280,7 @@ export default async function handler(request: VercelRequest, response: VercelRe
   }
 
   if (action === 'save-work') {
-    if (!requesterIsOwner && requester.role !== 'manager') {
+    if (requester.role !== 'owner' && requester.role !== 'manager') {
       return send(response, 403, { message: 'Chỉ Quản lí hoặc Chủ cửa hàng mới được đổi thông tin làm việc.' });
     }
 

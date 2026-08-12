@@ -1,5 +1,4 @@
 import { createClient, type User } from '@supabase/supabase-js';
-import { isStoreOwnerName } from '../src/shared/domain';
 
 type VercelRequest = {
   body?: unknown;
@@ -174,10 +173,10 @@ export default async function handler(request: VercelRequest, response: VercelRe
 
   const { data: requester, error: requesterError } = await admin
     .from('profiles')
-    .select('id,role,full_name')
+    .select('id,role')
     .eq('id', requesterData.user.id)
     .maybeSingle();
-  if (requesterError || !requester || requester.role !== 'owner' || !isStoreOwnerName(requester.full_name)) {
+  if (requesterError || !requester || requester.role !== 'owner') {
     return send(response, 403, { message: 'Chỉ Chủ cửa hàng mới có thể tạo dữ liệu thử nghiệm.' });
   }
 
