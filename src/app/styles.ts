@@ -2179,7 +2179,7 @@ export const styles = StyleSheet.create({
   managerPayrollBackButton: {
     alignItems: 'center',
     alignSelf: 'flex-start',
-    backgroundColor: colors.surface,
+    backgroundColor: 'rgba(255, 249, 241, 0.97)',
     borderColor: colors.line,
     borderRadius: 12,
     borderWidth: 1,
@@ -2188,6 +2188,13 @@ export const styles = StyleSheet.create({
     minHeight: 38,
     paddingHorizontal: 10,
     paddingVertical: 8,
+    position: 'sticky',
+    shadowColor: colors.deep,
+    shadowOffset: { width: 0, height: 7 },
+    shadowOpacity: 0.14,
+    shadowRadius: 12,
+    top: 0,
+    zIndex: 30,
   },
   managerPayrollBackText: {
     color: colors.primary,

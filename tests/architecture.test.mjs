@@ -261,3 +261,15 @@ test('inventory reporting uses two columns without recent-report history', () =>
   assert.doesNotMatch(ingredientScreen, /HistoryList|HistoryRow/);
   assert.match(styles, /supplyGrid:\s*{[\s\S]*?gridTemplateColumns: 'repeat\(2, minmax\(0, 1fr\)\)'/);
 });
+
+test('detail pages keep sticky and browser-native back navigation', () => {
+  const styles = readFileSync(new URL('../src/app/styles.ts', import.meta.url), 'utf8');
+
+  assert.match(app, /window\.history\.pushState\(createAppPageHistoryState\(nextPage\)/);
+  assert.match(app, /window\.addEventListener\('popstate', handlePopState\)/);
+  assert.match(app, /window\.history\.back\(\)/);
+  assert.match(app, /onBack={closeAppPage}/);
+  assert.match(styles, /managerPayrollBackButton:\s*{[\s\S]*?position: 'sticky'/);
+  assert.match(styles, /managerPayrollBackButton:\s*{[\s\S]*?top: 0/);
+  assert.match(styles, /managerPayrollBackButton:\s*{[\s\S]*?zIndex: 30/);
+});

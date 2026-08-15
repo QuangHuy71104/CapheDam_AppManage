@@ -133,6 +133,24 @@ import {
 } from './src/features/payroll/workspace';
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'staffManagement' | 'schedule';
 type AppPage = { key: 'main' } | { key: 'managerPayrollEmployee'; employeeId: string };
+const APP_PAGE_HISTORY_KEY = 'capheDamAppPage';
+
+const getAppPageFromHistoryState = (state: unknown): AppPage | null => {
+  if (!state || typeof state !== 'object') return null;
+  const pageState = (state as Record<string, unknown>)[APP_PAGE_HISTORY_KEY];
+  if (!pageState || typeof pageState !== 'object') return null;
+  const page = pageState as Record<string, unknown>;
+  if (page.key === 'main') return { key: 'main' };
+  if (page.key === 'managerPayrollEmployee' && typeof page.employeeId === 'string' && page.employeeId) {
+    return { key: 'managerPayrollEmployee', employeeId: page.employeeId };
+  }
+  return null;
+};
+
+const createAppPageHistoryState = (page: AppPage) => ({
+  ...(window.history.state && typeof window.history.state === 'object' ? window.history.state : {}),
+  [APP_PAGE_HISTORY_KEY]: page,
+});
 type AuthFeedback = {
   tone: 'success' | 'error' | 'info';
   title: string;
@@ -1782,8 +1800,45 @@ export default function App() {
   }, [activeTab, currentRole]);
 
   useEffect(() => {
+    const initialPage = getAppPageFromHistoryState(window.history.state);
+    if (initialPage) {
+      setPage(initialPage);
+    } else {
+      window.history.replaceState(createAppPageHistoryState({ key: 'main' }), '');
+    }
+
+    const handlePopState = (event: PopStateEvent) => {
+      setPage(getAppPageFromHistoryState(event.state) ?? { key: 'main' });
+      requestAnimationFrame(() => contentScrollRef.current?.scrollTo({ y: 0, animated: false }));
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
     setPage({ key: 'main' });
+    const historyPage = getAppPageFromHistoryState(window.history.state);
+    if (historyPage?.key !== 'main') {
+      window.history.replaceState(createAppPageHistoryState({ key: 'main' }), '');
+    }
   }, [activeTab, currentRole, selectedBranchId]);
+
+  const openAppPage = (nextPage: AppPage) => {
+    window.history.pushState(createAppPageHistoryState(nextPage), '');
+    setPage(nextPage);
+    requestAnimationFrame(() => contentScrollRef.current?.scrollTo({ y: 0, animated: false }));
+  };
+
+  const closeAppPage = () => {
+    const historyPage = getAppPageFromHistoryState(window.history.state);
+    if (page.key !== 'main' && historyPage?.key === page.key) {
+      window.history.back();
+      return;
+    }
+    setPage({ key: 'main' });
+    window.history.replaceState(createAppPageHistoryState({ key: 'main' }), '');
+  };
 
   const tabItems = getTabItemsForRole(currentRole);
   const activeBranch = getBranchById(selectedBranchId);
@@ -2382,7 +2437,7 @@ export default function App() {
                   branch={activeBranch}
                   managerId={profile.id}
                   monthKey={selectedMonthKey}
-                  onOpenEmployeePayroll={(employeeId) => setPage({ key: 'managerPayrollEmployee', employeeId })}
+                  onOpenEmployeePayroll={(employeeId) => openAppPage({ key: 'managerPayrollEmployee', employeeId })}
                   onMonthChange={setSelectedMonthKey}
                   sheets={branchSheetsForMonth}
                 />
@@ -2512,7 +2567,7 @@ export default function App() {
                 managerId={profile.id}
                 monthKey={selectedMonthKey}
                 onApproveEmployeePayroll={approveEmployeePayroll}
-                onBack={() => setPage({ key: 'main' })}
+                onBack={closeAppPage}
                 onMonthChange={setSelectedMonthKey}
                 onPasteGrid={pasteAttendanceGrid}
                 onReopenEmployeePayroll={reopenEmployeePayroll}
