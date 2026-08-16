@@ -132,7 +132,10 @@ import {
   type PayrollWorkspace,
 } from './src/features/payroll/workspace';
 type TabKey = 'attendance' | 'ingredients' | 'closing' | 'ownerPayroll' | 'staffManagement' | 'schedule';
-type AppPage = { key: 'main' } | { key: 'managerPayrollEmployee'; employeeId: string };
+type AppPage =
+  | { key: 'main' }
+  | { key: 'managerPayrollEmployee'; employeeId: string }
+  | { key: 'ownerPayrollBranch'; branchId: string };
 const APP_PAGE_HISTORY_KEY = 'capheDamAppPage';
 
 const getAppPageFromHistoryState = (state: unknown): AppPage | null => {
@@ -143,6 +146,9 @@ const getAppPageFromHistoryState = (state: unknown): AppPage | null => {
   if (page.key === 'main') return { key: 'main' };
   if (page.key === 'managerPayrollEmployee' && typeof page.employeeId === 'string' && page.employeeId) {
     return { key: 'managerPayrollEmployee', employeeId: page.employeeId };
+  }
+  if (page.key === 'ownerPayrollBranch' && typeof page.branchId === 'string' && page.branchId) {
+    return { key: 'ownerPayrollBranch', branchId: page.branchId };
   }
   return null;
 };
@@ -1842,6 +1848,7 @@ export default function App() {
 
   const tabItems = getTabItemsForRole(currentRole);
   const activeBranch = getBranchById(selectedBranchId);
+  const headerBranch = page.key === 'ownerPayrollBranch' ? getBranchById(page.branchId) : activeBranch;
   const trimmedEmployeeName = employeeName.trim();
   const signedEmployeeName =
     trimmedEmployeeName || (currentRole === 'manager' ? `Quản lí ${activeBranch.area}` : '');
@@ -2395,7 +2402,7 @@ export default function App() {
                 <Image source={logoImage} style={styles.brandLogo} />
               </View>
               <View style={styles.brandCopy}>
-                <Text style={styles.appSubtitle}>{activeBranch.name}</Text>
+                <Text style={styles.appSubtitle}>{headerBranch.name}</Text>
               </View>
             </View>
             <View style={styles.headerActions}>
@@ -2525,9 +2532,8 @@ export default function App() {
 
             {activeTab === 'ownerPayroll' && (
               <OwnerPayrollScreen
-                branchId={selectedBranchId}
                 monthKey={selectedMonthKey}
-                onBranchChange={setSelectedBranchId}
+                onOpenBranchPayroll={(branchId) => openAppPage({ key: 'ownerPayrollBranch', branchId })}
                 onMonthChange={setSelectedMonthKey}
                 sheets={data.attendanceSheets}
               />
@@ -2573,6 +2579,14 @@ export default function App() {
                 onReopenEmployeePayroll={reopenEmployeePayroll}
                 onUpdateCell={updateAttendanceCell}
                 sheets={branchSheetsForMonth}
+              />
+            ) : page.key === 'ownerPayrollBranch' && currentRole === 'owner' ? (
+              <OwnerBranchPayrollPage
+                branchId={page.branchId}
+                monthKey={selectedMonthKey}
+                onBack={closeAppPage}
+                onMonthChange={setSelectedMonthKey}
+                sheets={data.attendanceSheets}
               />
             ) : null}
           </ScrollView>
@@ -4283,6 +4297,20 @@ function ManagerPayrollScreen({
   );
 }
 
+function StickyBackButton({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <Pressable
+      accessibilityLabel={`Quay lại ${label.toLocaleLowerCase('vi-VN')}`}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [styles.managerPayrollBackButton, pressed && styles.pressed]}
+    >
+      <ChevronLeft color={colors.primary} size={18} />
+      <Text style={styles.managerPayrollBackText}>{label}</Text>
+    </Pressable>
+  );
+}
+
 function ManagerEmployeePayrollPage({
   branch,
   employeeId,
@@ -4339,15 +4367,7 @@ function ManagerEmployeePayrollPage({
 
   return (
     <View style={styles.screen}>
-      <Pressable
-        accessibilityLabel="Quay lại danh sách nhân viên"
-        accessibilityRole="button"
-        onPress={onBack}
-        style={({ pressed }) => [styles.managerPayrollBackButton, pressed && styles.pressed]}
-      >
-        <ChevronLeft color={colors.primary} size={18} />
-        <Text style={styles.managerPayrollBackText}>Danh sách nhân viên</Text>
-      </Pressable>
+      <StickyBackButton label="Danh sách nhân viên" onPress={onBack} />
 
       <SectionTitle icon={WalletCards} title="Bảng lương nhân viên" subtitle={branch.name} />
       <MonthNavigator monthKey={monthKey} onChange={onMonthChange} />
@@ -4565,15 +4585,46 @@ function StatusPanel({
 }
 
 function OwnerPayrollScreen({
+  monthKey,
+  onOpenBranchPayroll,
+  onMonthChange,
+  sheets,
+}: {
+  monthKey: string;
+  onOpenBranchPayroll: (branchId: string) => void;
+  onMonthChange: (value: string) => void;
+  sheets: AttendanceSheet[];
+}) {
+  return (
+    <View style={styles.screen}>
+      <SectionTitle icon={WalletCards} title="Bảng lương" subtitle="Chủ cửa hàng xem theo chi nhánh và tháng" />
+      <MonthNavigator monthKey={monthKey} onChange={onMonthChange} />
+      <OwnerBranchList
+        getMeta={(branch) => {
+          const approvedCount = sheets.filter(
+            (sheet) => sheet.branchId === branch.id && sheet.monthKey === monthKey && sheet.managerApprovedAt,
+          ).length;
+
+          return approvedCount > 0
+            ? `Đã nhận ${approvedCount} bảng lương đã duyệt`
+            : 'Chưa nhận bảng lương';
+        }}
+        onOpenBranch={onOpenBranchPayroll}
+      />
+    </View>
+  );
+}
+
+function OwnerBranchPayrollPage({
   branchId,
   monthKey,
-  onBranchChange,
+  onBack,
   onMonthChange,
   sheets,
 }: {
   branchId: string;
   monthKey: string;
-  onBranchChange: (value: string) => void;
+  onBack: () => void;
   onMonthChange: (value: string) => void;
   sheets: AttendanceSheet[];
 }) {
@@ -4590,24 +4641,11 @@ function OwnerPayrollScreen({
 
   return (
     <View style={styles.screen}>
-      <SectionTitle icon={WalletCards} title="Bảng lương" subtitle="Chủ cửa hàng xem theo chi nhánh và tháng" />
+      <StickyBackButton label="Danh sách chi nhánh" onPress={onBack} />
+      <SectionTitle icon={Store} title={selectedBranch.name} subtitle={selectedBranch.address} />
       <MonthNavigator monthKey={monthKey} onChange={onMonthChange} />
-      <OwnerBranchList
-        branchId={branchId}
-        getMeta={(branch) => {
-          const approvedCount = sheets.filter(
-            (sheet) => sheet.branchId === branch.id && sheet.monthKey === monthKey && sheet.managerApprovedAt,
-          ).length;
-
-          return approvedCount > 0
-            ? `Đã nhận ${approvedCount} bảng lương đã duyệt`
-            : 'Chưa nhận bảng lương';
-        }}
-        onBranchChange={onBranchChange}
-      />
 
       <View style={styles.managerPanel}>
-        <SectionTitle icon={Store} title={selectedBranch.name} subtitle={selectedBranch.address} />
         {received ? (
           <>
             <StatusPanel
@@ -4646,41 +4684,35 @@ function OwnerPayrollScreen({
 }
 
 function OwnerBranchList({
-  branchId,
   getMeta,
-  onBranchChange,
+  onOpenBranch,
 }: {
-  branchId: string;
   getMeta: (branch: Branch) => string;
-  onBranchChange: (value: string) => void;
+  onOpenBranch: (branchId: string) => void;
 }) {
   return (
     <View style={styles.ownerBranchList}>
-      {branches.map((branch) => {
-        const selected = branch.id === branchId;
-
-        return (
-          <Pressable
-            accessibilityRole="button"
-            key={branch.id}
-            onPress={() => onBranchChange(branch.id)}
-            style={({ pressed }) => [
-              styles.ownerBranchRow,
-              selected && styles.ownerBranchRowActive,
-              pressed && styles.pressed,
-            ]}
-          >
-            <View style={styles.ownerBranchIcon}>
-              <Building2 color={selected ? colors.onDark : colors.primary} size={19} />
-            </View>
-            <View style={styles.flex}>
-              <Text style={[styles.ownerBranchName, selected && styles.ownerBranchNameActive]}>{branch.name}</Text>
-              <Text style={[styles.ownerBranchMeta, selected && styles.ownerBranchMetaActive]}>{getMeta(branch)}</Text>
-            </View>
-            <ChevronRight color={selected ? colors.onDark : colors.muted} size={18} />
-          </Pressable>
-        );
-      })}
+      {branches.map((branch) => (
+        <Pressable
+          accessibilityLabel={`Mở bảng lương ${branch.name}`}
+          accessibilityRole="button"
+          key={branch.id}
+          onPress={() => onOpenBranch(branch.id)}
+          style={({ pressed }) => [
+            styles.ownerBranchRow,
+            pressed && styles.pressed,
+          ]}
+        >
+          <View style={styles.ownerBranchIcon}>
+            <Building2 color={colors.primary} size={19} />
+          </View>
+          <View style={styles.flex}>
+            <Text style={styles.ownerBranchName}>{branch.name}</Text>
+            <Text style={styles.ownerBranchMeta}>{getMeta(branch)}</Text>
+          </View>
+          <ChevronRight color={colors.muted} size={18} />
+        </Pressable>
+      ))}
     </View>
   );
 }

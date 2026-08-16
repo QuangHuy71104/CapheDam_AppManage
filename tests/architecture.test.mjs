@@ -265,10 +265,15 @@ test('inventory reporting uses two columns without recent-report history', () =>
 test('detail pages keep sticky and browser-native back navigation', () => {
   const styles = readFileSync(new URL('../src/app/styles.ts', import.meta.url), 'utf8');
 
+  assert.match(app, /key: 'ownerPayrollBranch'; branchId: string/);
+  assert.ok(app.includes("onOpenBranchPayroll={(branchId) => openAppPage({ key: 'ownerPayrollBranch', branchId })}"));
+  assert.match(app, /function OwnerBranchPayrollPage\(/);
+  assert.ok(app.includes('<StickyBackButton label="Danh sách chi nhánh" onPress={onBack} />'));
+  assert.ok(app.includes('<StickyBackButton label="Danh sách nhân viên" onPress={onBack} />'));
   assert.match(app, /window\.history\.pushState\(createAppPageHistoryState\(nextPage\)/);
   assert.match(app, /window\.addEventListener\('popstate', handlePopState\)/);
   assert.match(app, /window\.history\.back\(\)/);
-  assert.match(app, /onBack={closeAppPage}/);
+  assert.equal((app.match(/onBack={closeAppPage}/g) ?? []).length, 2);
   assert.match(styles, /managerPayrollBackButton:\s*{[\s\S]*?position: 'sticky'/);
   assert.match(styles, /managerPayrollBackButton:\s*{[\s\S]*?top: 0/);
   assert.match(styles, /managerPayrollBackButton:\s*{[\s\S]*?zIndex: 30/);
